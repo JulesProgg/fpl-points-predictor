@@ -109,6 +109,3 @@ if __name__ == "__main__":
     print(f"Data pipeline completed. File saved to: {output_path}")
 
 
-
-
-
