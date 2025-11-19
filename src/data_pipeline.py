@@ -15,7 +15,7 @@ from pathlib import Path
 import pandas as pd
 
 # Path to the project root folder
-PROJECT_ROOT = Path("/files/fpl-points-predictor")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 # Raw and processed data folders
 DATA_RAW_DIR = PROJECT_ROOT / "data" / "raw"
