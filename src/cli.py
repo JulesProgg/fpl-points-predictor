@@ -1,9 +1,12 @@
 import typer
 
 from src.data_pipeline import run_pipeline
-from src.model import predict_points, evaluate_model
-
-
+from src.model import (
+    predict_points,
+    evaluate_model,               
+    evaluate_position_mean_model,
+    evaluate_linear_model
+)
 
 app = typer.Typer(help="FPL Points Predictor CLI")
 
@@ -28,12 +31,27 @@ def run(n: int = 5):
 
 
 @app.command()
-def evaluate():
+def evaluate() -> None:
     """
-    Evaluates the SimpleMeanModel model and displays the MAE
+    Compare plusieurs modèles sur le TEST set (MAE).
     """
-    mae = evaluate_model()
-    typer.echo(f"MAE of SimpleMeanModel: {mae:.2f} points")
+    mae_baseline = evaluate_model()  # SimpleMeanModel
+    mae_position = evaluate_position_mean_model()  # PositionMeanModel
+    mae_linear = evaluate_linear_model()  # LinearRegressionModel
+
+    print("Model comparison on TEST set (MAE):")
+    print(f"- SimpleMeanModel (baseline):      {mae_baseline:8.3f}")
+    print(f"- PositionMeanModel (by position): {mae_position:8.3f}")
+    print(f"- LinearRegressionModel:           {mae_linear:8.3f}")
+
+    # Détermination du meilleur modèle
+    maes = {
+        "SimpleMeanModel (baseline)": mae_baseline,
+        "PositionMeanModel (by position)": mae_position,
+        "LinearRegressionModel": mae_linear,
+    }
+    best_name = min(maes, key=maes.get)
+    print(f"→ Best model: {best_name} ✅")
 
 
 if __name__ == "__main__":

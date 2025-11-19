@@ -5,7 +5,16 @@ import pytest
 import numpy as np
 
 import src.model as model
-from src.model import load_data, predict_points, evaluate_model
+from src.model import (
+    load_data,
+    predict_points,
+    evaluate_model,
+    train_test_split_data,
+    train_test_split,
+    train_position_mean_model,
+    evaluate_position_mean_model,
+)
+
 
 
 def test_predict_points_returns_list_of_floats(monkeypatch):
@@ -93,19 +102,47 @@ def test_train_model_returns_simple_model_object():
     assert all(isinstance(p, float) for p in preds)
 
 
-def evaluate_model() -> float:
+def test_train_test_split_data_covers_all_rows():
     """
-    Trains the SimpleMeanModel and returns an error metric (MAE)
-    on the same dataset (simple baseline).
+    train_test_split_data must return two DataFrames
+    that cover all rows without loss or duplication
     """
     df = load_data()
-    y_true = df["total_points"].to_numpy()
+    n_total = len(df)
 
-    model = train_model(df)
+    df_train, df_test = train_test_split_data(test_size=0.2, random_state=42)
 
-    # We make predictions for all lines
-    y_pred = np.array(model.predict(len(y_true)))
+    assert len(df_train) > 0
+    assert len(df_test) > 0
+    assert len(df_train) + len(df_test) == n_total
 
-    # Then the MAE is calculated
-    mae = float(np.mean(np.abs(y_true - y_pred)))
-    return mae
+    # no index overlap between train and test
+    assert set(df_train.index).isdisjoint(set(df_test.index))
+
+
+def test_evaluate_model_returns_non_negative_float():
+    """
+    evaluate_model must return a float (MAE) >= 0
+    """
+    mae = evaluate_model()
+
+    assert isinstance(mae, float)
+    assert mae >= 0
+
+
+def test_train_position_mean_model_builds_non_empty_dict():
+    df = load_data()
+    train_df, _ = train_test_split(df, test_size=0.2, random_state=0)
+    model = train_position_mean_model(train_df)
+    assert hasattr(model, "means_by_pos")
+    assert isinstance(model.means_by_pos, dict)
+    assert len(model.means_by_pos) > 0
+
+
+def test_evaluate_position_mean_model_returns_positive_float():
+    mae = evaluate_position_mean_model()
+    assert isinstance(mae, float)
+    assert mae >= 0
+
+
+
