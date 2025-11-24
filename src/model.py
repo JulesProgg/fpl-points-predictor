@@ -15,6 +15,8 @@ from src.data_pipeline import DATA_PROCESSED_DIR  # important: reuse the same fo
 from typing import Any
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error
+from sklearn.ensemble import RandomForestRegressor
+
 
 
 
@@ -146,20 +148,49 @@ def train_model(data: pd.DataFrame) -> Any:
     return SimpleMeanModel(data)
 
 
-def predict_points(n_gameweeks: int = 5) -> list[float]:
+def predict_points(n_gameweeks: int = 5, model: str = "baseline") -> list[float]:
     """
     Predict FPL points for a given number of future gameweeks.
 
-    Steps:
-    - load the dataset
-    - train the baseline model
-    - return its predictions
+    Parameters
+    ----------
+    n_gameweeks : int
+        Number of future gameweeks to predict.
+    model : str
+        Which model to use:
+        - "baseline"       -> SimpleMeanModel (train_model)
+        - "linear"         -> LinearRegressionModel
+        - "random_forest"  -> RandomForestModel
     """
-    data = load_data()
-    model_obj = train_model(data)
-    return model_obj.predict(n_gameweeks)
+    df_train, _ = train_test_split_data()
 
-import numpy as np  # en haut du fichier si pas déjà importé
+    if model == "baseline":
+        # SimpleMeanModel already has a predict(n_gameweeks) method
+        model_obj = train_model(df_train)
+        preds = model_obj.predict(n_gameweeks)  # array-like
+        return [float(p) for p in preds]
+
+    elif model == "linear":
+        model_obj = train_linear_model(df_train)
+        # here .predict expects a DataFrame
+        per_player_preds = model_obj.predict(df_train)  # shape (n_players,)
+        avg_points = float(np.mean(per_player_preds))
+        # repeat this average for n_gameweeks
+        return [avg_points] * n_gameweeks
+
+    elif model == "random_forest":
+        model_obj = train_random_forest_model(df_train)
+        per_player_preds = model_obj.predict(df_train)
+        avg_points = float(np.mean(per_player_preds))
+        return [avg_points] * n_gameweeks
+
+    else:
+        raise ValueError(
+            f"Unknown model: {model!r}. "
+            "Expected 'baseline', 'linear', or 'random_forest'."
+        )
+
+
 
 def evaluate_model() -> float:
     """
@@ -181,7 +212,7 @@ LINEAR_FEATURE_COLUMNS: list[str] = [
     "minutes",
     "goals_scored",
     "assists",
-    "expected_goals",               # ex-xG
+    "expected_goals",              # ex-xG
     "expected_assists",            # ex-xA
     "expected_goal_involvements",  # xG + xA combiné
     "ict_index",
@@ -203,16 +234,30 @@ class LinearRegressionModel:
 
     def predict_from_array(self, X: np.ndarray) -> np.ndarray:
         """
-        Takes an X matrix (n_samples, n_features) and returns the predictions
+        Takes an X matrix (n_samples, n_features) and returns the predictions.
         """
         return X @ self.coef_ + self.intercept_
 
     def predict_for_dataframe(self, df: pd.DataFrame) -> np.ndarray:
         """
-        Extracts the features in df according to self.feature_names and predicts y
+        Extracts the features in df according to self.feature_names and predicts y.
+        NaN and +/-inf in the features are handled safely.
         """
-        X = df[self.feature_names].to_numpy(dtype=float)
+        features = (
+            df[self.feature_names]
+            .replace([np.inf, -np.inf], np.nan)  # we're getting rid of the inf
+            .fillna(0.0)                         # the remaining NaNs are replaced with 0
+        )
+        X = features.to_numpy(dtype=float)
         return self.predict_from_array(X)
+
+    def predict(self, df: pd.DataFrame) -> np.ndarray:
+        """
+        Wrapper so the model matches the API of RandomForestModel.
+        """
+        return self.predict_for_dataframe(df)
+
+
 
 def train_linear_model(
     train_df: pd.DataFrame,
@@ -286,3 +331,119 @@ def evaluate_linear_model(
 
     mae = _compute_mae(y_true, y_pred)
     return mae
+
+
+class RandomForestModel:
+    """
+    Simple wrapper around a sklearn RandomForestRegressor.
+    We keep the same interface logic as for LinearRegressionModel.
+    """
+
+    def __init__(self, regressor: RandomForestRegressor, feature_columns: list[str]):
+        self.regressor = regressor
+        self.feature_columns = feature_columns
+
+    def predict_for_dataframe(self, df: pd.DataFrame) -> np.ndarray:
+        """
+        Extracts the features in df according to self.feature_columns and predicts y.
+        NaN and +/-inf in the features are handled safely.
+        """
+        features = (
+            df[self.feature_columns]
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(0.0)
+        )
+        X = features.to_numpy(dtype=float)
+        return self.regressor.predict(X)
+
+    def predict(self, df: pd.DataFrame) -> np.ndarray:
+        """
+        Wrapper for consistency with other model classes.
+        """
+        return self.predict_for_dataframe(df)
+
+
+
+
+
+
+def _get_rf_feature_columns() -> list[str]:
+    """
+    Columns used as features for RandomForest.
+    To be adapted if necessary, but it already works well with the FPL dataset
+    """
+    return [
+    "minutes",
+    "goals_scored",
+    "assists",
+    "clean_sheets",
+    "goals_conceded",
+    "saves",
+    "yellow_cards",
+    "red_cards",
+    "bonus",
+    "bps",
+    "expected_goals",
+    "expected_assists",
+    "expected_goal_involvements",
+    "expected_goals_conceded",
+    "influence",
+    "creativity",
+    "threat",
+    "ict_index",
+]
+
+
+
+def train_random_forest_model(train_df: pd.DataFrame) -> RandomForestModel:
+    """
+    Trains a RandomForestRegressor on the training data
+    and returns a RandomForestModel ready for use
+    """
+    feature_cols = _get_rf_feature_columns()
+
+    train_clean = train_df[feature_cols + ["total_points"]].dropna()
+
+    X_train = train_clean[feature_cols].to_numpy()
+    y_train = train_clean["total_points"].to_numpy()
+
+
+    rf = RandomForestRegressor(
+        n_estimators=200,
+        max_depth=None,
+        min_samples_split=2,
+        min_samples_leaf=1,
+        random_state=42,
+        n_jobs=-1,
+    )
+
+    rf.fit(X_train, y_train)
+
+    return RandomForestModel(regressor=rf, feature_columns=feature_cols)
+
+
+def evaluate_random_forest_model(
+    test_size: float = 0.2,
+    random_state: int = 42,
+) -> float:
+    """
+    Train a RandomForestModel on TRAIN and evaluate it on TEST using MAE.
+    Use train_test_split_data and compute_mae to remain consistent
+    with other models
+    """
+    _ = load_data()  # just to remain consistent, even if not strictly necessary
+
+    train_df, test_df = train_test_split_data(
+        test_size=test_size,
+        random_state=random_state,
+    )
+
+    model = train_random_forest_model(train_df)
+
+    y_true = test_df["total_points"].to_numpy()
+    y_pred = model.predict(test_df)
+
+    mae = _compute_mae(y_true, y_pred)
+
+    return float(mae)
+
