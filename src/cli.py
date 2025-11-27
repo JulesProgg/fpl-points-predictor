@@ -8,6 +8,7 @@ from src.model import (
     evaluate_linear_model,
     evaluate_random_forest_model
 )
+from src.bookmaker_benchmark import build_team_strength_table
 
 app = typer.Typer(help="FPL Points Predictor CLI")
 
@@ -35,6 +36,22 @@ def run(
     preds = predict_points(n_gameweeks=n, model=model)
     for i, p in enumerate(preds, start=1):
         print(f"GW{i}: {p:.2f} pts")
+        
+
+@app.command()
+def show_bookmakers() -> None:
+    """
+    Display Bet365 team strength for the 2024-25 Premier League season.
+    """
+    df = build_team_strength_table()
+
+    print("Bookmaker (Bet365) Team Strength – Season 2024/25")
+    print("-" * 55)
+    for _, row in df.iterrows():
+        team = str(row["team"])
+        strength = float(row["bet365_strength"])
+        print(f"{team:<20} {strength:.3f}")
+
 
 
 
