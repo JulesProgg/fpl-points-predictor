@@ -1,27 +1,30 @@
 """
 Model module for the FPL Points Predictor.
 
-We start with a very simple baseline model:
-- load_data() reads the processed CSV from the data pipeline
-- train_model() returns a simple mean-based model
-- predict_points() uses that model to predict future gameweeks
+We provide:
+- Baseline models (simple mean, position mean) using a season-based split:
+    TRAIN = seasons 2022-23 + 2023-24
+    TEST  = season 2024-25
+
+- Pre-season models (linear regression, random forest) using lagged features:
+    For each player and season t, we use stats from season t-1 as predictors.
+    TRAIN = season 2023-24  (features = stats 2022-23, target = points 2023-24)
+    TEST  = season 2024-25  (features = stats 2023-24, target = points 2024-25)
 """
 
-
-import pandas as pd
-import numpy as np
-
-from src.data_pipeline import DATA_PROCESSED_DIR  # important: reuse the same folder as the pipeline
 from typing import Any
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_absolute_error
+
+import numpy as np
+import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 
-
-
+from src.data_pipeline import DATA_PROCESSED_DIR
 
 # Use the SAME filename as in data_pipeline.run_pipeline()
 DEFAULT_PROCESSED_DATA = DATA_PROCESSED_DIR / "players_all_seasons.csv"
+
+
+#  DATA LOADING & UTILS
 
 
 def load_data(path=None) -> pd.DataFrame:
@@ -37,7 +40,7 @@ def load_data(path=None) -> pd.DataFrame:
     Returns
     -------
     pd.DataFrame
-        The dataset with one row per player-gameweek ready for modelling.
+        The dataset with one row per player-season ready for modelling.
     """
     if path is None:
         path = DEFAULT_PROCESSED_DATA
@@ -45,334 +48,49 @@ def load_data(path=None) -> pd.DataFrame:
     df = pd.read_csv(path)
     return df
 
+
 def _compute_mae(y_true, y_pred) -> float:
     """
-    Compute Mean Absolute Error (MAE) ignoring pairs (y_true, y_pred)
-    that contain NaN
+    Compute Mean Absolute Error (MAE), ignoring pairs (y_true, y_pred)
+    that contain NaN.
     """
     y_true = np.asarray(y_true, dtype=float)
     y_pred = np.asarray(y_pred, dtype=float)
 
-    # Only keep indices where neither y_true nor y_pred are NaN
     mask = ~np.isnan(y_true) & ~np.isnan(y_pred)
-
     if not np.any(mask):
         raise ValueError("No valid (y_true, y_pred) pairs to compute MAE (all NaN).")
 
     return float(np.mean(np.abs(y_true[mask] - y_pred[mask])))
 
 
-
-
-def train_test_split_data(test_size: float = 0.2, random_state: int = 42):
+def season_train_test_split() -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Split the full processed dataset into train and test DataFrames.
-    """
-    df = load_data()
+    Split the full dataset by season for baseline models:
 
-    df_train, df_test = train_test_split(
-        df, test_size=test_size, random_state=random_state
-    )
-
-    return df_train, df_test
-
-
-
-class SimpleMeanModel:
-    """
-    Very simple baseline model: predicts the mean of historical points
-    for each future gameweek.
-    """
-
-    def __init__(self, data: pd.DataFrame):
-        self.data = data
-
-    def predict(self, n_gameweeks: int) -> list[float]:
-        # Use the target produced by your pipeline: 'total_points'
-        if "total_points" in self.data.columns:
-            baseline = float(self.data["total_points"].mean())
-        elif "points" in self.data.columns:
-            baseline = float(self.data["points"].mean())
-        else:
-            baseline = 0.0
-        return [baseline for _ in range(n_gameweeks)]
-
-class PositionMeanModel:
-    """
-    Slightly more advanced baseline:
-- average total points per position
-- if a position is unknown, we use the overall average
-    """
-    def __init__(self, means_by_pos: dict[str, float], global_mean: float):
-        self.means_by_pos = means_by_pos
-        self.global_mean = global_mean
-
-    def predict_for_position(self, position: str) -> float:
-        return float(self.means_by_pos.get(position, self.global_mean))
-
-def train_position_mean_model(train_df: pd.DataFrame) -> PositionMeanModel:
-    """
-    Train a model that predicts the average points per position
-    """
-    grouped = train_df.groupby("position")["total_points"].mean()
-    means_by_pos = grouped.to_dict()
-    global_mean = float(train_df["total_points"].mean())
-    return PositionMeanModel(means_by_pos, global_mean)
-
-def evaluate_position_mean_model(test_size: float = 0.2, random_state: int = 42) -> float:
-    """
-    Evaluates PositionMeanModel on a separate test set 
-    then returns the MAE on this test set
+    TRAIN = seasons 2022-23 + 2023-24
+    TEST  = season 2024-25
     """
     df = load_data()
-    train_df, test_df = train_test_split(df, test_size=test_size, random_state=random_state)
 
-    model = train_position_mean_model(train_df)
+    train_df = df[df["season"].isin(["2022-23", "2023-24"])].copy()
+    test_df = df[df["season"] == "2024-25"].copy()
 
-    y_true = test_df["total_points"].to_numpy()
-    positions = test_df["position"].tolist()
-
-    y_pred = np.array([model.predict_for_position(pos) for pos in positions])
-    mae = float(np.mean(np.abs(y_true - y_pred)))
-    return mae
+    return train_df, test_df
 
 
-
-def train_model(data: pd.DataFrame) -> Any:
-    """
-    Train a prediction model on the provided dataset.
-
-    For now, we return a very simple baseline model that always predicts
-    the mean historical points.
-    """
-    return SimpleMeanModel(data)
-
-
-def predict_points(n_gameweeks: int = 5, model: str = "baseline") -> list[float]:
-    """
-    Predict FPL points for a given number of future gameweeks.
-
-    Parameters
-    ----------
-    n_gameweeks : int
-        Number of future gameweeks to predict.
-    model : str
-        Which model to use:
-        - "baseline"       -> SimpleMeanModel (train_model)
-        - "linear"         -> LinearRegressionModel
-        - "random_forest"  -> RandomForestModel
-    """
-    df_train, _ = train_test_split_data()
-
-    if model == "baseline":
-        # SimpleMeanModel already has a predict(n_gameweeks) method
-        model_obj = train_model(df_train)
-        preds = model_obj.predict(n_gameweeks)  # array-like
-        return [float(p) for p in preds]
-
-    elif model == "linear":
-        model_obj = train_linear_model(df_train)
-        # here .predict expects a DataFrame
-        per_player_preds = model_obj.predict(df_train)  # shape (n_players,)
-        avg_points = float(np.mean(per_player_preds))
-        # repeat this average for n_gameweeks
-        return [avg_points] * n_gameweeks
-
-    elif model == "random_forest":
-        model_obj = train_random_forest_model(df_train)
-        per_player_preds = model_obj.predict(df_train)
-        avg_points = float(np.mean(per_player_preds))
-        return [avg_points] * n_gameweeks
-
-    else:
-        raise ValueError(
-            f"Unknown model: {model!r}. "
-            "Expected 'baseline', 'linear', or 'random_forest'."
-        )
-
-
-
-def evaluate_model() -> float:
-    """
-    Trains the SimpleMeanModel on TRAIN data
-    and evaluates it on TEST data using MAE.
-    """
-    df_train, df_test = train_test_split_data()
-    model = train_model(df_train)
-
-    y_true = df_test["total_points"].to_numpy()
-    y_pred = np.array(model.predict(len(y_true)))
-
-    # MAE
-    mae = _compute_mae(y_true, y_pred)
-    return mae
-
+#  FEATURE LISTS (used for lagged models)
 
 LINEAR_FEATURE_COLUMNS: list[str] = [
     "minutes",
     "goals_scored",
     "assists",
-    "expected_goals",              # ex-xG
-    "expected_assists",            # ex-xA
-    "expected_goal_involvements",  # xG + xA combiné
+    "expected_goals",
+    "expected_assists",
     "ict_index",
 ]
-class LinearRegressionModel:
-    """
-    Multivariate linear regression model:
-    y = intercept + sum_j coef_j * x_j
 
-    - coef_: feature coefficients
-    - intercept_: bias
-    - feature_names: order of columns used for training
-    """
-
-    def __init__(self, coef_: np.ndarray, intercept_: float, feature_names: list[str]):
-        self.coef_ = np.asarray(coef_, dtype=float)
-        self.intercept_ = float(intercept_)
-        self.feature_names = list(feature_names)
-
-    def predict_from_array(self, X: np.ndarray) -> np.ndarray:
-        """
-        Takes an X matrix (n_samples, n_features) and returns the predictions.
-        """
-        return X @ self.coef_ + self.intercept_
-
-    def predict_for_dataframe(self, df: pd.DataFrame) -> np.ndarray:
-        """
-        Extracts the features in df according to self.feature_names and predicts y.
-        NaN and +/-inf in the features are handled safely.
-        """
-        features = (
-            df[self.feature_names]
-            .replace([np.inf, -np.inf], np.nan)  # we're getting rid of the inf
-            .fillna(0.0)                         # the remaining NaNs are replaced with 0
-        )
-        X = features.to_numpy(dtype=float)
-        return self.predict_from_array(X)
-
-    def predict(self, df: pd.DataFrame) -> np.ndarray:
-        """
-        Wrapper so the model matches the API of RandomForestModel.
-        """
-        return self.predict_for_dataframe(df)
-
-
-
-def train_linear_model(
-    train_df: pd.DataFrame,
-    feature_cols: list[str] | None = None,
-) -> LinearRegressionModel:
-    """
-    Trains a linear model (least squares) on the specified features.
-    Rows containing NaN in the features OR the target are removed
-    """
-    if feature_cols is None:
-        feature_cols = LINEAR_FEATURE_COLUMNS
-
-    # mandatory columns = features + target
-    cols_needed = list(feature_cols) + ["total_points"]
-
-    # all lines containing NaN in these columns are deleted
-    df = train_df.dropna(subset=cols_needed)
-
-    # security if everything is NaN
-    if df.empty:
-        raise ValueError(
-            "No data left after dropping NaNs. "
-            "Check that your feature columns exist and are not all NaN."
-        )
-
-    X = df[feature_cols].to_numpy(dtype=float)
-    y = df["total_points"].to_numpy(dtype=float)
-
-    # Add column “1” for the intercept
-    X_aug = np.c_[np.ones(X.shape[0]), X]
-
-    # Least squares
-    theta, *_ = np.linalg.lstsq(X_aug, y, rcond=None)
-
-    intercept = float(theta[0])
-    coef = theta[1:]
-
-    return LinearRegressionModel(
-        coef_=coef,
-        intercept_=intercept,
-        feature_names=feature_cols
-    )
-
-
-
-
-def evaluate_linear_model(
-    test_size: float = 0.2,
-    random_state: int = 42,
-    feature_cols: list[str] | None = None,
-) -> float:
-    """
-    Split TRAIN/TEST, trains a LinearRegressionModel
-    and returns the MAE on the TEST set
-    """
-    train_df, test_df = train_test_split_data(
-        test_size=test_size,
-        random_state=random_state,
-    )
-
-    model = train_linear_model(train_df, feature_cols=feature_cols)
-
-    y_true = test_df["total_points"].to_numpy(dtype=float)
-
-    # test features (NaN -> 0.0 to avoid NaN in predictions)
-    X_test_df = test_df[model.feature_names].copy()
-    X_test_df = X_test_df.fillna(0.0)
-    X_test = X_test_df.to_numpy(dtype=float)
-
-    y_pred = model.predict_from_array(X_test)
-
-    mae = _compute_mae(y_true, y_pred)
-    return mae
-
-
-class RandomForestModel:
-    """
-    Simple wrapper around a sklearn RandomForestRegressor.
-    We keep the same interface logic as for LinearRegressionModel.
-    """
-
-    def __init__(self, regressor: RandomForestRegressor, feature_columns: list[str]):
-        self.regressor = regressor
-        self.feature_columns = feature_columns
-
-    def predict_for_dataframe(self, df: pd.DataFrame) -> np.ndarray:
-        """
-        Extracts the features in df according to self.feature_columns and predicts y.
-        NaN and +/-inf in the features are handled safely.
-        """
-        features = (
-            df[self.feature_columns]
-            .replace([np.inf, -np.inf], np.nan)
-            .fillna(0.0)
-        )
-        X = features.to_numpy(dtype=float)
-        return self.regressor.predict(X)
-
-    def predict(self, df: pd.DataFrame) -> np.ndarray:
-        """
-        Wrapper for consistency with other model classes.
-        """
-        return self.predict_for_dataframe(df)
-
-
-
-
-
-
-def _get_rf_feature_columns() -> list[str]:
-    """
-    Columns used as features for RandomForest.
-    To be adapted if necessary, but it already works well with the FPL dataset
-    """
-    return [
+RF_FEATURE_COLUMNS: list[str] = [
     "minutes",
     "goals_scored",
     "assists",
@@ -394,19 +112,306 @@ def _get_rf_feature_columns() -> list[str]:
 ]
 
 
+#  LAGGED DATASET (X_{t-1} -> y_t) FOR PRE-SEASON MODELS
 
-def train_random_forest_model(train_df: pd.DataFrame) -> RandomForestModel:
+def prepare_lagged_dataset(feature_cols: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Trains a RandomForestRegressor on the training data
-    and returns a RandomForestModel ready for use
+    Build a dataset with lagged features (X_{t-1}), following the
+    time-series methodology (no leakage, strict past→future split).
+
+    For each player (id), seasons are sorted chronologically.
+    For season t, we use stats from season t-1 as predictors.
+    The target variable is total_points_t.
+
+    Temporal split:
+    - TRAIN = season 2023-24  (features = stats from 2022-23)
+    - TEST  = season 2024-25  (features = stats from 2023-24)
     """
-    feature_cols = _get_rf_feature_columns()
+    df = load_data().copy()
+    df = df.sort_values(["id", "season"])
 
-    train_clean = train_df[feature_cols + ["total_points"]].dropna()
+    lagged = df.copy()
+    for col in feature_cols:
+        lagged[col + "_prev"] = lagged.groupby("id")[col].shift(1)
 
-    X_train = train_clean[feature_cols].to_numpy()
-    y_train = train_clean["total_points"].to_numpy()
+    lagged["target"] = lagged["total_points"]
 
+    needed_cols = [c + "_prev" for c in feature_cols] + ["target"]
+    lagged = lagged.dropna(subset=needed_cols)
+
+    train_df = lagged[lagged["season"] == "2023-24"].copy()
+    test_df = lagged[lagged["season"] == "2024-25"].copy()
+
+    return train_df, test_df
+
+
+#  BASELINE MODELS
+
+class SimpleMeanModel:
+    """
+    Very simple baseline model: predicts the mean of historical points
+    for each future gameweek.
+    """
+
+    def __init__(self, data: pd.DataFrame):
+        self.data = data
+
+    def predict(self, n_gameweeks: int) -> list[float]:
+        if "total_points" in self.data.columns:
+            baseline = float(self.data["total_points"].mean())
+        elif "points" in self.data.columns:
+            baseline = float(self.data["points"].mean())
+        else:
+            baseline = 0.0
+        return [baseline for _ in range(n_gameweeks)]
+
+
+class PositionMeanModel:
+    """
+    Baseline model:
+    - average total points per position on the training seasons
+    - fallback to global average if position is unknown
+    """
+
+    def __init__(self, means_by_pos: dict[str, float], global_mean: float):
+        self.means_by_pos = means_by_pos
+        self.global_mean = global_mean
+
+    def predict_for_position(self, position: str) -> float:
+        return float(self.means_by_pos.get(position, self.global_mean))
+
+
+def train_position_mean_model(train_df: pd.DataFrame) -> PositionMeanModel:
+    """
+    Train a model that predicts the average points per position.
+    """
+    grouped = train_df.groupby("position")["total_points"].mean()
+    means_by_pos = grouped.to_dict()
+    global_mean = float(train_df["total_points"].mean())
+    return PositionMeanModel(means_by_pos, global_mean)
+
+
+def evaluate_position_mean_model(
+    test_size: float = 0.2,
+    random_state: int = 42,
+) -> float:
+    """
+    Evaluate PositionMeanModel on a season-based split:
+
+    TRAIN = seasons 2022-23 + 2023-24
+    TEST  = season 2024-25
+
+    Parameters test_size and random_state are kept for API compatibility,
+    but not used (no random splitting).
+    """
+    train_df, test_df = season_train_test_split()
+
+    model = train_position_mean_model(train_df)
+
+    y_true = test_df["total_points"].to_numpy()
+    positions = test_df["position"].tolist()
+    y_pred = np.array([model.predict_for_position(pos) for pos in positions])
+
+    mae = _compute_mae(y_true, y_pred)
+    return mae
+
+
+def train_model(data: pd.DataFrame) -> Any:
+    """
+    Train a very simple baseline model that always predicts
+    the mean historical points.
+    """
+    return SimpleMeanModel(data)
+
+
+def evaluate_model() -> float:
+    """
+    Train SimpleMeanModel on TRAIN data
+    (seasons 2022-23 + 2023-24)
+    and evaluate it on TEST data (season 2024-25) using MAE.
+    """
+    train_df, test_df = season_train_test_split()
+    model = train_model(train_df)
+
+    y_true = test_df["total_points"].to_numpy()
+    y_pred = np.array(model.predict(len(y_true)))
+
+    mae = _compute_mae(y_true, y_pred)
+    return mae
+
+
+#  LINEAR REGRESSION MODEL (PRE-SEASON, LAGGED FEATURES)
+
+class LinearRegressionModel:
+    """
+    Multivariate linear regression model:
+    y = intercept + sum_j coef_j * x_j
+
+    - coef_: feature coefficients
+    - intercept_: bias term
+    - feature_names: the columns used for training
+    """
+
+    def __init__(self, coef_: np.ndarray, intercept_: float, feature_names: list[str]):
+        self.coef_ = np.asarray(coef_, dtype=float)
+        self.intercept_ = float(intercept_)
+        self.feature_names = list(feature_names)
+
+    def predict_from_array(self, X: np.ndarray) -> np.ndarray:
+        """
+        Take an X matrix (n_samples, n_features) and return the predictions.
+        """
+        return X @ self.coef_ + self.intercept_
+
+    def predict_for_dataframe(self, df: pd.DataFrame) -> np.ndarray:
+        """
+        Extract the features in df according to self.feature_names and predict y.
+        NaN and +/-inf in the features are handled safely.
+        """
+        features = (
+            df[self.feature_names]
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(0.0)
+        )
+        X = features.to_numpy(dtype=float)
+        return self.predict_from_array(X)
+
+    def predict(self, df: pd.DataFrame) -> np.ndarray:
+        """
+        Wrapper so the model matches the API of RandomForestModel.
+        """
+        return self.predict_for_dataframe(df)
+
+
+def train_linear_model(
+    train_df: pd.DataFrame,
+    feature_cols: list[str],
+) -> LinearRegressionModel:
+    """
+    Train a linear regression model using lagged predictors (X_{t-1}),
+    following the OLS approach:
+        θ = argmin ||Xθ - y||²
+
+    train_df must contain:
+    - '<feature>_prev' columns = lagged predictors
+    - 'target'                 = response (total_points_t)
+    """
+    lag_feature_cols = [c + "_prev" for c in feature_cols if c + "_prev" in train_df.columns]
+    cols_needed = lag_feature_cols + ["target"]
+
+    df = train_df.dropna(subset=cols_needed)
+    if df.empty:
+        raise ValueError("No training data available after dropping NaNs.")
+
+    X = df[lag_feature_cols].to_numpy(dtype=float)
+    y = df["target"].to_numpy(dtype=float)
+
+    X_aug = np.c_[np.ones(X.shape[0]), X]
+
+    theta, *_ = np.linalg.lstsq(X_aug, y, rcond=None)
+
+    intercept = float(theta[0])
+    coef = theta[1:]
+
+    return LinearRegressionModel(
+        coef_=coef,
+        intercept_=intercept,
+        feature_names=lag_feature_cols,
+    )
+
+
+def evaluate_linear_model(
+    test_size: float = 0.2,
+    random_state: int = 42,
+    feature_cols: list[str] | None = None,
+) -> float:
+    """
+    Pre-season evaluation for the LinearRegressionModel using a temporal split:
+
+    TRAIN:
+        season = 2023-24
+        predictors: stats from 2022-23 (columns *_prev)
+        target: total_points_2023_24
+
+    TEST:
+        season = 2024-25
+        predictors: stats from 2023-24 (columns *_prev)
+        target: total_points_2024_25
+
+    No shuffling, no leakage. Parameters test_size and random_state are
+    kept only for API compatibility.
+    """
+    if feature_cols is None:
+        feature_cols = LINEAR_FEATURE_COLUMNS
+
+    train_df, test_df = prepare_lagged_dataset(feature_cols)
+
+    model = train_linear_model(train_df, feature_cols=feature_cols)
+
+    X_test_df = test_df[model.feature_names].copy()
+    X_test_df = X_test_df.fillna(0.0)
+
+    y_true = test_df["target"].to_numpy(dtype=float)
+    y_pred = model.predict_for_dataframe(X_test_df)
+
+    mae = _compute_mae(y_true, y_pred)
+    return mae
+
+
+#  RANDOM FOREST MODEL (PRE-SEASON, LAGGED FEATURES)
+
+class RandomForestModel:
+    """
+    Wrapper around sklearn's RandomForestRegressor.
+
+    We keep a similar interface as LinearRegressionModel:
+    - feature_columns: columns used as predictors
+    """
+
+    def __init__(self, regressor: RandomForestRegressor, feature_columns: list[str]):
+        self.regressor = regressor
+        self.feature_columns = feature_columns
+
+    def predict_for_dataframe(self, df: pd.DataFrame) -> np.ndarray:
+        """
+        Extract features in df and predict y.
+        NaN and +/-inf in the features are handled safely.
+        """
+        features = (
+            df[self.feature_columns]
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(0.0)
+        )
+        X = features.to_numpy(dtype=float)
+        return self.regressor.predict(X)
+
+    def predict(self, df: pd.DataFrame) -> np.ndarray:
+        """
+        Wrapper for consistency with other model classes.
+        """
+        return self.predict_for_dataframe(df)
+
+
+def train_random_forest_model(
+    train_df: pd.DataFrame,
+    feature_cols: list[str],
+) -> RandomForestModel:
+    """
+    Train a RandomForestRegressor on lagged features.
+
+    train_df must contain:
+    - '<feature>_prev' columns
+    - 'target' = total_points_t
+    """
+    lag_feature_cols = [c + "_prev" for c in feature_cols if c + "_prev" in train_df.columns]
+    cols_needed = lag_feature_cols + ["target"]
+
+    df = train_df.dropna(subset=cols_needed)
+    if df.empty:
+        raise ValueError("No training data available for RandomForest after dropping NaNs.")
+
+    X_train = df[lag_feature_cols].to_numpy(dtype=float)
+    y_train = df["target"].to_numpy(dtype=float)
 
     rf = RandomForestRegressor(
         n_estimators=200,
@@ -416,10 +421,9 @@ def train_random_forest_model(train_df: pd.DataFrame) -> RandomForestModel:
         random_state=42,
         n_jobs=-1,
     )
-
     rf.fit(X_train, y_train)
 
-    return RandomForestModel(regressor=rf, feature_columns=feature_cols)
+    return RandomForestModel(regressor=rf, feature_columns=lag_feature_cols)
 
 
 def evaluate_random_forest_model(
@@ -427,23 +431,76 @@ def evaluate_random_forest_model(
     random_state: int = 42,
 ) -> float:
     """
-    Train a RandomForestModel on TRAIN and evaluate it on TEST using MAE.
-    Use train_test_split_data and compute_mae to remain consistent
-    with other models
+    Pre-season evaluation for the RandomForestModel using temporal split:
+
+    TRAIN:
+        season = 2023-24
+        predictors: stats from 2022-23 (columns *_prev)
+        target: total_points_2023_24
+
+    TEST:
+        season = 2024-25
+        predictors: stats from 2023-24 (columns *_prev)
+        target: total_points_2024_25
+
+    No shuffling, no leakage. Parameters test_size and random_state are
+    kept only for API compatibility.
     """
-    _ = load_data()  # just to remain consistent, even if not strictly necessary
+    train_df, test_df = prepare_lagged_dataset(RF_FEATURE_COLUMNS)
 
-    train_df, test_df = train_test_split_data(
-        test_size=test_size,
-        random_state=random_state,
-    )
+    model = train_random_forest_model(train_df, feature_cols=RF_FEATURE_COLUMNS)
 
-    model = train_random_forest_model(train_df)
-
-    y_true = test_df["total_points"].to_numpy()
-    y_pred = model.predict(test_df)
+    y_true = test_df["target"].to_numpy(dtype=float)
+    y_pred = model.predict_for_dataframe(test_df)
 
     mae = _compute_mae(y_true, y_pred)
-
     return float(mae)
 
+
+#  CLI-FACING PREDICTION FUNCTION
+
+def predict_points(n_gameweeks: int = 5, model: str = "baseline") -> list[float]:
+    """
+    Predict FPL points for a given number of future gameweeks.
+
+    Parameters
+    ----------
+    n_gameweeks : int
+        Number of future gameweeks to predict.
+    model : str
+        Which model to use:
+        - "baseline"       -> SimpleMeanModel (season-based split)
+        - "linear"         -> LinearRegressionModel (pre-season, lagged)
+        - "random_forest"  -> RandomForestModel (pre-season, lagged)
+
+    For linear and random_forest in this CLI function, we:
+    - train on the lagged TRAIN set (season 2023-24),
+    - compute the average predicted target,
+    - repeat this value for n_gameweeks.
+    This is a simple way to expose season-level models via a GW-level CLI.
+    """
+    if model == "baseline":
+        train_df, _ = season_train_test_split()
+        model_obj = train_model(train_df)
+        preds = model_obj.predict(n_gameweeks)
+        return [float(p) for p in preds]
+
+    elif model == "linear":
+        train_df, _ = prepare_lagged_dataset(LINEAR_FEATURE_COLUMNS)
+        model_obj = train_linear_model(train_df, feature_cols=LINEAR_FEATURE_COLUMNS)
+        per_player_preds = model_obj.predict_for_dataframe(train_df)
+        avg_points = float(np.mean(per_player_preds))
+        return [avg_points] * n_gameweeks
+
+    elif model == "random_forest":
+        train_df, _ = prepare_lagged_dataset(RF_FEATURE_COLUMNS)
+        model_obj = train_random_forest_model(train_df, feature_cols=RF_FEATURE_COLUMNS)
+        per_player_preds = model_obj.predict_for_dataframe(train_df)
+        avg_points = float(np.mean(per_player_preds))
+        return [avg_points] * n_gameweeks
+
+    else:
+        raise ValueError(
+            f"Unknown model: {model!r}. "
+            "Expected 'baseline', 'linear', or 'random_forest'."
+        )

@@ -7,6 +7,7 @@ Steps:
 - Load the three raw CSV files (one per season) from data/raw/
 - Normalise the 2024-25 dataset so columns match the others
 - Keep only the relevant columns (USEFUL_COLS)
+- Add a 'season' column so each row knows which season it belongs to
 - Concatenate all three seasons
 - Save the final dataset to data/processed/players_all_seasons.csv
 """
@@ -59,6 +60,7 @@ def run_pipeline() -> Path:
     - load the three raw datasets
     - normalise the 2024-25 dataset
     - select useful columns
+    - add a 'season' column
     - concatenate all seasons
     - save the final dataset to data/processed/
 
@@ -71,7 +73,7 @@ def run_pipeline() -> Path:
     df23 = pd.read_csv(DATA_RAW_DIR / "season23-24.csv")
     df24 = pd.read_csv(DATA_RAW_DIR / "season24-25.csv")
 
-    # Normalise the 2024-25 dataset so that it matches the others 
+    # Normalise the 2024-25 dataset so that it matches the others
 
     # 1) Rename columns to match the other seasons
     rename_24 = {
@@ -93,7 +95,12 @@ def run_pipeline() -> Path:
     df23_useful = select_useful(df23)
     df24_useful = select_useful(df24)
 
-    # Concatenate the three seasons 
+    # Add season information (kept outside USEFUL_COLS on purpose)
+    df22_useful["season"] = "2022-23"
+    df23_useful["season"] = "2023-24"
+    df24_useful["season"] = "2024-25"
+
+    # Concatenate the three seasons
     full = pd.concat([df22_useful, df23_useful, df24_useful], ignore_index=True)
 
     # Create the output folder, save the cleaned dataset into it, and return the file path
@@ -103,9 +110,8 @@ def run_pipeline() -> Path:
 
     return out_path
 
+
 # When we run this script directly, launch the pipeline and display the output file path
 if __name__ == "__main__":
     output_path = run_pipeline()
     print(f"Data pipeline completed. File saved to: {output_path}")
-
-

@@ -6,7 +6,7 @@ from src.model import (
     evaluate_model,               
     evaluate_position_mean_model,
     evaluate_linear_model,
-    evaluate_random_forest_model
+    evaluate_random_forest_model,
 )
 from src.bookmaker_benchmark import build_team_strength_table
 
@@ -32,11 +32,13 @@ def run(
 ) -> None:
     """
     Performs test predictions for n future gameweeks using the chosen model.
+
+    Models are trained on seasons 2022-23 and 2023-24.
     """
     preds = predict_points(n_gameweeks=n, model=model)
     for i, p in enumerate(preds, start=1):
         print(f"GW{i}: {p:.2f} pts")
-        
+
 
 @app.command()
 def show_bookmakers() -> None:
@@ -53,26 +55,25 @@ def show_bookmakers() -> None:
         print(f"{team:<20} {strength:.3f}")
 
 
-
-
-
 @app.command()
 def evaluate() -> None:
     """
     Compare several models on the TEST set (MAE).
-    """
-    mae_baseline = evaluate_model()  # SimpleMeanModel
-    mae_position = evaluate_position_mean_model()  # PositionMeanModel
-    mae_linear = evaluate_linear_model()  # LinearRegressionModel
-    mae_rf = evaluate_random_forest_model()
 
-    print("Compare several models on the TEST set (MAE):")
+    TRAIN = seasons 2022-23 + 2023-24
+    TEST  = season 2024-25
+    """
+    mae_baseline = evaluate_model()                 # SimpleMeanModel
+    mae_position = evaluate_position_mean_model()   # PositionMeanModel
+    mae_linear = evaluate_linear_model()            # LinearRegressionModel
+    mae_rf = evaluate_random_forest_model()         # RandomForestModel
+
+    print("Model comparison on TEST set (MAE – season 2024-25):")
     print(f"- SimpleMeanModel (baseline):      {mae_baseline:8.3f}")
     print(f"- PositionMeanModel (by position): {mae_position:8.3f}")
     print(f"- LinearRegressionModel:           {mae_linear:8.3f}")
-    print(f"- RandomForestModel:                 {mae_rf:8.3f}")
+    print(f"- RandomForestModel:               {mae_rf:8.3f}")
 
-    # Determining the best model
     maes = {
         "SimpleMeanModel (baseline)": mae_baseline,
         "PositionMeanModel (by position)": mae_position,
