@@ -2,7 +2,7 @@
 Model module for the FPL Points Predictor.
 
 We provide:
-- Baseline models (simple mean, position mean) using a season-based split:
+- Baseline models (position mean) using a season-based split:
     TRAIN = seasons 2022-23 + 2023-24
     TEST  = season 2024-25
 
@@ -147,24 +147,6 @@ def prepare_lagged_dataset(feature_cols: list[str]) -> tuple[pd.DataFrame, pd.Da
 
 #  BASELINE MODELS
 
-class SimpleMeanModel:
-    """
-    Very simple baseline model: predicts the mean of historical points
-    for each future gameweek.
-    """
-
-    def __init__(self, data: pd.DataFrame):
-        self.data = data
-
-    def predict(self, n_gameweeks: int) -> list[float]:
-        if "total_points" in self.data.columns:
-            baseline = float(self.data["total_points"].mean())
-        elif "points" in self.data.columns:
-            baseline = float(self.data["points"].mean())
-        else:
-            baseline = 0.0
-        return [baseline for _ in range(n_gameweeks)]
-
 
 class PositionMeanModel:
     """
@@ -211,30 +193,6 @@ def evaluate_position_mean_model(
     y_true = test_df["total_points"].to_numpy()
     positions = test_df["position"].tolist()
     y_pred = np.array([model.predict_for_position(pos) for pos in positions])
-
-    mae = _compute_mae(y_true, y_pred)
-    return mae
-
-
-def train_model(data: pd.DataFrame) -> Any:
-    """
-    Train a very simple baseline model that always predicts
-    the mean historical points.
-    """
-    return SimpleMeanModel(data)
-
-
-def evaluate_model() -> float:
-    """
-    Train SimpleMeanModel on TRAIN data
-    (seasons 2022-23 + 2023-24)
-    and evaluate it on TEST data (season 2024-25) using MAE.
-    """
-    train_df, test_df = season_train_test_split()
-    model = train_model(train_df)
-
-    y_true = test_df["total_points"].to_numpy()
-    y_pred = np.array(model.predict(len(y_true)))
 
     mae = _compute_mae(y_true, y_pred)
     return mae
@@ -459,7 +417,7 @@ def evaluate_random_forest_model(
 
 #  CLI-FACING PREDICTION FUNCTION
 
-def predict_points(n_gameweeks: int = 5, model: str = "baseline") -> list[float]:
+def predict_points(n_gameweeks: int = 5, model: str = "linear") -> list[float]:
     """
     Predict FPL points for a given number of future gameweeks.
 
@@ -469,7 +427,7 @@ def predict_points(n_gameweeks: int = 5, model: str = "baseline") -> list[float]
         Number of future gameweeks to predict.
     model : str
         Which model to use:
-        - "baseline"       -> SimpleMeanModel (season-based split)
+        - "position"       -> PositionMeanModel (season-based split)
         - "linear"         -> LinearRegressionModel (pre-season, lagged)
         - "random_forest"  -> RandomForestModel (pre-season, lagged)
 
@@ -479,11 +437,12 @@ def predict_points(n_gameweeks: int = 5, model: str = "baseline") -> list[float]
     - repeat this value for n_gameweeks.
     This is a simple way to expose season-level models via a GW-level CLI.
     """
-    if model == "baseline":
+    if model == "position":
         train_df, _ = season_train_test_split()
-        model_obj = train_model(train_df)
-        preds = model_obj.predict(n_gameweeks)
-        return [float(p) for p in preds]
+        model_obj = train_position_mean_model(train_df)
+        # Use the average of position-specific means as a simple GW-level proxy
+        avg_points = float(np.mean(list(model_obj.means_by_pos.values())))
+        return [avg_points] * n_gameweeks
 
     elif model == "linear":
         train_df, _ = prepare_lagged_dataset(LINEAR_FEATURE_COLUMNS)
@@ -502,5 +461,6 @@ def predict_points(n_gameweeks: int = 5, model: str = "baseline") -> list[float]
     else:
         raise ValueError(
             f"Unknown model: {model!r}. "
-            "Expected 'baseline', 'linear', or 'random_forest'."
+            "Expected 'position', 'linear', or 'random_forest'."
         )
+

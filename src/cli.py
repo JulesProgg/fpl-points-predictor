@@ -3,7 +3,6 @@ import typer
 from src.data_pipeline import run_pipeline
 from src.model import (
     predict_points,
-    evaluate_model,               
     evaluate_position_mean_model,
     evaluate_linear_model,
     evaluate_random_forest_model,
@@ -26,8 +25,8 @@ def build_data():
 def run(
     n: int = 5,
     model: str = typer.Option(
-        "baseline",
-        help="Model to use for predictions: baseline, linear, random_forest",
+        "position",
+        help="Model to use for predictions: position, linear, random_forest",
     ),
 ) -> None:
     """
@@ -63,19 +62,16 @@ def evaluate() -> None:
     TRAIN = seasons 2022-23 + 2023-24
     TEST  = season 2024-25
     """
-    mae_baseline = evaluate_model()                 # SimpleMeanModel
     mae_position = evaluate_position_mean_model()   # PositionMeanModel
     mae_linear = evaluate_linear_model()            # LinearRegressionModel
     mae_rf = evaluate_random_forest_model()         # RandomForestModel
 
     print("Model comparison on TEST set (MAE – season 2024-25):")
-    print(f"- SimpleMeanModel (baseline):      {mae_baseline:8.3f}")
     print(f"- PositionMeanModel (by position): {mae_position:8.3f}")
     print(f"- LinearRegressionModel:           {mae_linear:8.3f}")
     print(f"- RandomForestModel:               {mae_rf:8.3f}")
 
     maes = {
-        "SimpleMeanModel (baseline)": mae_baseline,
         "PositionMeanModel (by position)": mae_position,
         "LinearRegressionModel": mae_linear,
         "RandomForestModel": mae_rf,
@@ -86,3 +82,4 @@ def evaluate() -> None:
 
 if __name__ == "__main__":
     app()
+
