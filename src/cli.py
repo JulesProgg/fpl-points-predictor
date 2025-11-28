@@ -5,7 +5,7 @@ from src.model import (
     predict_points,
     evaluate_position_mean_model,
     evaluate_linear_model,
-    evaluate_random_forest_model,
+    evaluate_gradient_boosting_model,  # ← GBM au lieu de RF
 )
 from src.bookmaker_benchmark import build_team_strength_table
 
@@ -26,7 +26,7 @@ def run(
     n: int = 5,
     model: str = typer.Option(
         "position",
-        help="Model to use for predictions: position, linear, random_forest",
+        help="Model to use for predictions: position, linear, gbm",
     ),
 ) -> None:
     """
@@ -62,19 +62,19 @@ def evaluate() -> None:
     TRAIN = seasons 2022-23 + 2023-24
     TEST  = season 2024-25
     """
-    mae_position = evaluate_position_mean_model()   # PositionMeanModel
-    mae_linear = evaluate_linear_model()            # LinearRegressionModel
-    mae_rf = evaluate_random_forest_model()         # RandomForestModel
+    mae_position = evaluate_position_mean_model()        # PositionMeanModel
+    mae_linear = evaluate_linear_model()                 # LinearRegressionModel
+    mae_gbm = evaluate_gradient_boosting_model()         # GradientBoostingModel
 
     print("Model comparison on TEST set (MAE – season 2024-25):")
     print(f"- PositionMeanModel (by position): {mae_position:8.3f}")
     print(f"- LinearRegressionModel:           {mae_linear:8.3f}")
-    print(f"- RandomForestModel:               {mae_rf:8.3f}")
+    print(f"- GradientBoostingModel:           {mae_gbm:8.3f}")
 
     maes = {
         "PositionMeanModel (by position)": mae_position,
         "LinearRegressionModel": mae_linear,
-        "RandomForestModel": mae_rf,
+        "GradientBoostingModel": mae_gbm,
     }
     best_name = min(maes, key=maes.get)
     print(f"→ Best model: {best_name} ")
@@ -82,4 +82,3 @@ def evaluate() -> None:
 
 if __name__ == "__main__":
     app()
-

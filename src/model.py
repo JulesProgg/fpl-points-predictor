@@ -6,7 +6,7 @@ We provide:
     TRAIN = seasons 2022-23 + 2023-24
     TEST  = season 2024-25
 
-- Pre-season models (linear regression, random forest) using lagged features:
+- Pre-season models (linear regression, gradient boosting) using lagged features:
     For each player and season t, we use stats from season t-1 as predictors.
     TRAIN = season 2023-24  (features = stats 2022-23, target = points 2023-24)
     TEST  = season 2024-25  (features = stats 2023-24, target = points 2024-25)
@@ -16,7 +16,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import GradientBoostingRegressor  # CHANGEMENT: GBM au lieu de RF
 
 from src.data_pipeline import DATA_PROCESSED_DIR
 
@@ -90,7 +90,8 @@ LINEAR_FEATURE_COLUMNS: list[str] = [
     "ict_index",
 ]
 
-RF_FEATURE_COLUMNS: list[str] = [
+# CHANGEMENT: anciennement RF_FEATURE_COLUMNS, maintenant pour le Gradient Boosting
+GBM_FEATURE_COLUMNS: list[str] = [
     "minutes",
     "goals_scored",
     "assists",
@@ -236,7 +237,7 @@ class LinearRegressionModel:
 
     def predict(self, df: pd.DataFrame) -> np.ndarray:
         """
-        Wrapper so the model matches the API of RandomForestModel.
+        Wrapper so the model matches the API of GradientBoostingModel.
         """
         return self.predict_for_dataframe(df)
 
@@ -316,17 +317,17 @@ def evaluate_linear_model(
     return mae
 
 
-#  RANDOM FOREST MODEL (PRE-SEASON, LAGGED FEATURES)
+#  GRADIENT BOOSTING MODEL (PRE-SEASON, LAGGED FEATURES)
 
-class RandomForestModel:
+class GradientBoostingModel:
     """
-    Wrapper around sklearn's RandomForestRegressor.
+    Wrapper around sklearn's GradientBoostingRegressor.
 
     We keep a similar interface as LinearRegressionModel:
     - feature_columns: columns used as predictors
     """
 
-    def __init__(self, regressor: RandomForestRegressor, feature_columns: list[str]):
+    def __init__(self, regressor: GradientBoostingRegressor, feature_columns: list[str]):
         self.regressor = regressor
         self.feature_columns = feature_columns
 
@@ -350,12 +351,12 @@ class RandomForestModel:
         return self.predict_for_dataframe(df)
 
 
-def train_random_forest_model(
+def train_gradient_boosting_model(
     train_df: pd.DataFrame,
     feature_cols: list[str],
-) -> RandomForestModel:
+) -> GradientBoostingModel:
     """
-    Train a RandomForestRegressor on lagged features.
+    Train a GradientBoostingRegressor on lagged features.
 
     train_df must contain:
     - '<feature>_prev' columns
@@ -366,30 +367,29 @@ def train_random_forest_model(
 
     df = train_df.dropna(subset=cols_needed)
     if df.empty:
-        raise ValueError("No training data available for RandomForest after dropping NaNs.")
+        raise ValueError("No training data available for Gradient Boosting after dropping NaNs.")
 
     X_train = df[lag_feature_cols].to_numpy(dtype=float)
     y_train = df["target"].to_numpy(dtype=float)
 
-    rf = RandomForestRegressor(
-        n_estimators=200,
-        max_depth=None,
-        min_samples_split=2,
-        min_samples_leaf=1,
+    gbm = GradientBoostingRegressor(
         random_state=42,
-        n_jobs=-1,
+        # Tu peux ajuster ces hyperparamètres si tu veux:
+        # n_estimators=200,
+        # learning_rate=0.1,
+        # max_depth=3,
     )
-    rf.fit(X_train, y_train)
+    gbm.fit(X_train, y_train)
 
-    return RandomForestModel(regressor=rf, feature_columns=lag_feature_cols)
+    return GradientBoostingModel(regressor=gbm, feature_columns=lag_feature_cols)
 
 
-def evaluate_random_forest_model(
+def evaluate_gradient_boosting_model(
     test_size: float = 0.2,
     random_state: int = 42,
 ) -> float:
     """
-    Pre-season evaluation for the RandomForestModel using temporal split:
+    Pre-season evaluation for the GradientBoostingModel using temporal split:
 
     TRAIN:
         season = 2023-24
@@ -404,9 +404,9 @@ def evaluate_random_forest_model(
     No shuffling, no leakage. Parameters test_size and random_state are
     kept only for API compatibility.
     """
-    train_df, test_df = prepare_lagged_dataset(RF_FEATURE_COLUMNS)
+    train_df, test_df = prepare_lagged_dataset(GBM_FEATURE_COLUMNS)
 
-    model = train_random_forest_model(train_df, feature_cols=RF_FEATURE_COLUMNS)
+    model = train_gradient_boosting_model(train_df, feature_cols=GBM_FEATURE_COLUMNS)
 
     y_true = test_df["target"].to_numpy(dtype=float)
     y_pred = model.predict_for_dataframe(test_df)
@@ -427,11 +427,11 @@ def predict_points(n_gameweeks: int = 5, model: str = "linear") -> list[float]:
         Number of future gameweeks to predict.
     model : str
         Which model to use:
-        - "position"       -> PositionMeanModel (season-based split)
-        - "linear"         -> LinearRegressionModel (pre-season, lagged)
-        - "random_forest"  -> RandomForestModel (pre-season, lagged)
+        - "position" -> PositionMeanModel (season-based split)
+        - "linear"   -> LinearRegressionModel (pre-season, lagged)
+        - "gbm"      -> GradientBoostingModel (pre-season, lagged)
 
-    For linear and random_forest in this CLI function, we:
+    For linear and gbm in this CLI function, we:
     - train on the lagged TRAIN set (season 2023-24),
     - compute the average predicted target,
     - repeat this value for n_gameweeks.
@@ -451,9 +451,9 @@ def predict_points(n_gameweeks: int = 5, model: str = "linear") -> list[float]:
         avg_points = float(np.mean(per_player_preds))
         return [avg_points] * n_gameweeks
 
-    elif model == "random_forest":
-        train_df, _ = prepare_lagged_dataset(RF_FEATURE_COLUMNS)
-        model_obj = train_random_forest_model(train_df, feature_cols=RF_FEATURE_COLUMNS)
+    elif model == "gbm":
+        train_df, _ = prepare_lagged_dataset(GBM_FEATURE_COLUMNS)
+        model_obj = train_gradient_boosting_model(train_df, feature_cols=GBM_FEATURE_COLUMNS)
         per_player_preds = model_obj.predict_for_dataframe(train_df)
         avg_points = float(np.mean(per_player_preds))
         return [avg_points] * n_gameweeks
@@ -461,6 +461,5 @@ def predict_points(n_gameweeks: int = 5, model: str = "linear") -> list[float]:
     else:
         raise ValueError(
             f"Unknown model: {model!r}. "
-            "Expected 'position', 'linear', or 'random_forest'."
+            "Expected 'position', 'linear', or 'gbm'."
         )
-
