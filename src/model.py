@@ -17,11 +17,14 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import GradientBoostingRegressor  # CHANGEMENT: GBM au lieu de RF
-
 from src.data_pipeline import DATA_PROCESSED_DIR
+from pathlib import Path
+from sklearn.linear_model import LinearRegression
 
-# Use the SAME filename as in data_pipeline.run_pipeline()
+
 DEFAULT_PROCESSED_DATA = DATA_PROCESSED_DIR / "players_all_seasons.csv"
+
+PLAYER_GW_LAGGED_DATA = DATA_PROCESSED_DIR / "player_gameweeks_lagged.csv"
 
 
 #  DATA LOADING & UTILS
@@ -44,6 +47,26 @@ def load_data(path=None) -> pd.DataFrame:
     """
     if path is None:
         path = DEFAULT_PROCESSED_DATA
+
+    df = pd.read_csv(path)
+    return df
+
+
+def load_player_gameweeks_lagged(path: Path | str | None = None) -> pd.DataFrame:
+    """
+    Load the per-player-per-gameweek dataset with lagged features.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per player-gameweek, with:
+        - identifiers (id, name, team, position)
+        - 'season', 'gameweek'
+        - 'points' (target for this GW)
+        - lagged features from previous gameweeks
+    """
+    if path is None:
+        path = PLAYER_GW_LAGGED_DATA
 
     df = pd.read_csv(path)
     return df
@@ -90,7 +113,6 @@ LINEAR_FEATURE_COLUMNS: list[str] = [
     "ict_index",
 ]
 
-# CHANGEMENT: anciennement RF_FEATURE_COLUMNS, maintenant pour le Gradient Boosting
 GBM_FEATURE_COLUMNS: list[str] = [
     "minutes",
     "goals_scored",
@@ -111,6 +133,62 @@ GBM_FEATURE_COLUMNS: list[str] = [
     "threat",
     "ict_index",
 ]
+# GAMEWEEK-LEVEL FEATURES (automatically inferred)
+
+NON_FEATURE_COLS_GW: set[str] = {
+    "id",
+    "player_id",
+    "name",
+    "team",
+    "position",
+    "season",
+    "gameweek",
+    "points",  # target
+}
+
+
+def build_gw_features_and_target(
+    df: pd.DataFrame,
+    target_col: str = "points",
+) -> tuple[pd.DataFrame, pd.Series]:
+    """
+    Build feature matrix X and target y for the gameweek-level model.
+
+    Features = all numeric columns except:
+        - identifiers
+        - season, gameweek
+        - the target
+        - any column containing 'point' (to avoid leakage)
+    """
+    numeric_cols = [
+        c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])
+    ]
+
+    # Strict exclusion of any column containing 'point'
+    feature_cols = [
+        c
+        for c in numeric_cols
+        if (
+            c not in NON_FEATURE_COLS_GW
+            and c != target_col
+            and "point" not in c.lower()   # anti-leakage
+        )
+    ]
+
+    if not feature_cols:
+        raise ValueError("No feature columns found for the gameweek model.")
+
+    clean_df = df.dropna(subset=feature_cols + [target_col]).copy()
+
+    X = (
+        clean_df[feature_cols]
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(0.0)
+    )
+    y = clean_df[target_col].astype(float)
+
+    return X, y
+
 
 
 #  LAGGED DATASET (X_{t-1} -> y_t) FOR PRE-SEASON MODELS
@@ -413,6 +491,50 @@ def evaluate_gradient_boosting_model(
 
     mae = _compute_mae(y_true, y_pred)
     return float(mae)
+
+def evaluate_linear_gw_model(test_season: str = "2023/24") -> float:
+    """
+    Evaluate a linear regression model on gameweek-level lagged data.
+
+    TRAIN = all seasons except `test_season`
+    TEST  = only `test_season`
+
+    Target: 'points' (per player-gameweek).
+    Features: all numeric lagged columns, excluding identifiers and 'points'.
+    """
+    df = load_player_gameweeks_lagged()
+
+    # Sanity check: does the test season exist?
+    available_seasons = sorted(df["season"].unique())
+    if test_season not in available_seasons:
+        raise ValueError(
+            f"Season {test_season!r} not found in gameweek data. "
+            f"Available seasons: {available_seasons}"
+        )
+
+    train_df = df[df["season"] != test_season].copy()
+    test_df = df[df["season"] == test_season].copy()
+
+    if train_df.empty or test_df.empty:
+        raise ValueError(
+            "Train or test set is empty in evaluate_linear_gw_model "
+            f"(check that season {test_season!r} has enough data)."
+        )
+
+    # Build features/targets
+    X_train, y_train = build_gw_features_and_target(train_df, target_col="points")
+    X_test, y_test = build_gw_features_and_target(test_df, target_col="points")
+
+    # Train linear regression
+    reg = LinearRegression()
+    reg.fit(X_train.to_numpy(dtype=float), y_train.to_numpy(dtype=float))
+
+    # Predict on test set
+    y_pred = reg.predict(X_test.to_numpy(dtype=float))
+
+    mae = _compute_mae(y_test, y_pred)
+    return float(mae)
+
 
 
 #  CLI-FACING PREDICTION FUNCTION
