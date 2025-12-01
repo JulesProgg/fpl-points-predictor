@@ -51,7 +51,12 @@ RENAME_MAP = {
     "season": "season",
     "gameweek": "gameweek",
     "round": "gameweek",  # au cas où certains fichiers utilisent round
+
+    # needed for the comparison part
+    "was_home": "was_home",
+    "opponent": "opponent",
 }
+
 
 # Colonnes cibles que tu veux dans player_gameweeks_raw.csv
 # (on ajoute gameweek pour garder l’info de la GW)
@@ -59,6 +64,8 @@ TARGET_COLUMNS = [
     "id",
     "name",
     "team",
+    "opponent",   # add
+    "was_home",   # add
     "position",
     "minutes",
     "goals_scored",
@@ -86,6 +93,7 @@ TARGET_COLUMNS = [
     "season",
     "gameweek",
 ]
+
 
 
 def build_player_gameweeks_raw_from_kaggle() -> Path:
