@@ -1,309 +1,235 @@
 """
-data_pipeline.py
+Gameweek-level data pipeline for the FPL Points Predictor.
 
-Simple data cleaning pipeline for the FPL Points Predictor project.
+This pipeline:
 
-Season-level pipeline:
-- Load the three raw CSV files (one per season) from data/raw/
-- Normalise the 2024-25 dataset so columns match the others
-- Keep only the relevant columns (USEFUL_COLS)
-- Add a 'season' column so each row knows which season it belongs to
-- Concatenate all three seasons
-- Save the final dataset to data/processed/players_all_seasons.csv
+1. Loads a raw per-player-per-gameweek CSV from data/raw/player_gameweeks_raw.csv
+   (Kaggle Fantasy Premier League Player Data 2016-2024).
 
-Gameweek-level pipeline (for GW-by-GW models):
-- Load a raw per-player-per-gameweek CSV from data/raw/player_gameweeks_raw.csv
-- Standardise column names (id, name, team, position, season, gameweek, points, etc.)
-- Keep only relevant columns (GAMEWEEK_COLS)
-- Sort and save to data/processed/player_gameweeks.csv
+2. Keeps ONLY the seasons 2016/17 to 2022/23 (project scope).
+   Seasons like 2023/24, 2024/25, ... are dropped.
+
+3. Selects and standardises the relevant columns:
+   id, name, team, position, minutes, goals_scored, assists,
+   goals_conceded, clean_sheets, saves, penalties_saved, penalties_missed,
+   yellow_cards, red_cards, own_goals, starts, bonus, bps,
+   expected_goals, expected_assists, expected_goal_involvements,
+   expected_goals_conceded, influence, creativity, threat, ict_index,
+   total_points, season, gameweek
+
+4. Renames:
+   - total_points -> points    (target for GW models)
+   - id -> player_id (keeps id as well, but models group by player_id)
+
+5. Sorts the dataset by (player_id, season, gameweek).
+
+6. Saves the final dataset to:
+   - data/processed/player_gameweeks.csv
+   - data/processed/player_gameweeks_lagged.csv
+
+   The models then build lag features in model.py (no lagging here).
 """
 
 from pathlib import Path
 import pandas as pd
 
-# Path to the project root folder
+# ---------------------------------------------------------------------
+# PATHS
+# ---------------------------------------------------------------------
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-# Raw and processed data folders
 DATA_RAW_DIR = PROJECT_ROOT / "data" / "raw"
 DATA_PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
 
+# 👉 Adapte ce nom si ton fichier brut a un autre nom
+RAW_GW_FILE = DATA_RAW_DIR / "player_gameweeks_raw.csv"
 
-# SEASON-LEVEL PIPELINE 
+PLAYER_GW_FILE = DATA_PROCESSED_DIR / "player_gameweeks.csv"
+PLAYER_GW_LAGGED_FILE = DATA_PROCESSED_DIR / "player_gameweeks_lagged.csv"
 
-# Relevant columns from the raw datasets
-USEFUL_COLS = [
-    # identification
-    "id", "name", "team", "position",
+# ---------------------------------------------------------------------
+# CONFIG
+# ---------------------------------------------------------------------
 
-    # raw statistics
-    "minutes", "goals_scored", "assists",
-    "goals_conceded", "clean_sheets", "saves",
-    "penalties_saved", "penalties_missed",
-    "yellow_cards", "red_cards", "own_goals",
-    "starts", "bonus", "bps",
+# Seasons kept in the project (Kaggle FPL 2016/17 → 2022/23 only)
+ALLOWED_SEASONS = [
+    "2016/17",
+    "2017/18",
+    "2018/19",
+    "2019/20",
+    "2020/21",
+    "2021/22",
+    "2022/23",
+]
 
-    # advanced cumulative statistics
-    "expected_goals", "expected_assists",
-    "expected_goal_involvements",  # not available for 24-25
+# Columns expected from the raw Kaggle file
+GAMEWEEK_COLS = [
+    "id",
+    "name",
+    "team",
+    "position",
+    "minutes",
+    "goals_scored",
+    "assists",
+    "goals_conceded",
+    "clean_sheets",
+    "saves",
+    "penalties_saved",
+    "penalties_missed",
+    "yellow_cards",
+    "red_cards",
+    "own_goals",
+    "starts",
+    "bonus",
+    "bps",
+    "expected_goals",
+    "expected_assists",
+    "expected_goal_involvements",
     "expected_goals_conceded",
-    "influence", "creativity", "threat", "ict_index",
-
-    # target
+    "influence",
+    "creativity",
+    "threat",
+    "ict_index",
     "total_points",
+    "season",
+    "gameweek",
 ]
 
 
-def select_useful(df: pd.DataFrame) -> pd.DataFrame:
+# ---------------------------------------------------------------------
+# CORE HELPERS
+# ---------------------------------------------------------------------
+
+
+def filter_allowed_seasons(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Return a new and independent DataFrame containing only the relevant columns
-    defined in USEFUL_COLS (keeping only those that exist in df).
+    Keep only the seasons defined in ALLOWED_SEASONS.
+    This ensures that 2023/24 and later seasons are always excluded.
     """
-    cols = [c for c in USEFUL_COLS if c in df.columns]
-    return df[cols].copy()
+    if "season" not in df.columns:
+        raise ValueError("Column 'season' is missing from dataframe.")
+    return df[df["season"].isin(ALLOWED_SEASONS)].copy()
+
+
+def load_raw_gameweeks(path: Path | str = RAW_GW_FILE) -> pd.DataFrame:
+    """
+    Load the raw per-player-per-gameweek dataset from Kaggle.
+
+    The file is expected to contain at least the columns listed in GAMEWEEK_COLS.
+    """
+    df = pd.read_csv(path)
+
+    # Optional sanity check: ensure required columns are present
+    missing = [c for c in GAMEWEEK_COLS if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"Missing columns in raw gameweek file {path!r}: {missing}"
+        )
+
+    return df
+
+
+def clean_gameweeks(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Clean and standardise the gameweek-level dataset:
+
+    - Keep only GAMEWEEK_COLS
+    - Filter to ALLOWED_SEASONS (2016/17 → 2022/23)
+    - Rename:
+        * total_points -> points (target for GW models)
+        * id -> player_id (keep id as well)
+    - Ensure proper dtypes and sorting.
+    """
+    # Keep only the relevant columns
+    df = df[GAMEWEEK_COLS].copy()
+
+    # Filter seasons
+    df = filter_allowed_seasons(df)
+
+    # Rename target column
+    df = df.rename(columns={"total_points": "points"})
+
+    # Create player_id column (models group by player_id)
+    if "player_id" not in df.columns:
+        df["player_id"] = df["id"]
+
+    # Enforce integer type for gameweek if possible
+    try:
+        df["gameweek"] = df["gameweek"].astype(int)
+    except Exception:
+        # If conversion fails, we leave as-is but it's a red flag
+        pass
+
+    # Sort chronologically by player, season, gameweek
+    df = df.sort_values(["player_id", "season", "gameweek"]).reset_index(drop=True)
+
+    # Optional: reorder columns to put player_id first (nice to read)
+    # keep original id as well
+    cols = ["player_id"] + [c for c in df.columns if c != "player_id"]
+    df = df[cols]
+
+    return df
+
+
+# ---------------------------------------------------------------------
+# PIPELINE STEPS
+# ---------------------------------------------------------------------
+
+
+def build_player_gameweeks(raw_path: Path | str = RAW_GW_FILE) -> Path:
+    """
+    Build a clean per-player-per-gameweek dataset:
+
+    1. Load raw Kaggle CSV (player_gameweeks_raw).
+    2. Clean and filter seasons (2016/17 → 2022/23).
+    3. Standardise columns.
+    4. Save to data/processed/player_gameweeks.csv.
+
+    Returns
+    -------
+    Path
+        Path to data/processed/player_gameweeks.csv
+    """
+    DATA_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+
+    df_raw = load_raw_gameweeks(raw_path)
+    df_clean = clean_gameweeks(df_raw)
+
+    df_clean.to_csv(PLAYER_GW_FILE, index=False)
+    return PLAYER_GW_FILE
+
+
+def build_player_gameweeks_lagged(raw_path: Path | str = RAW_GW_FILE) -> Path:
+    """
+    Build the dataset used by GW-level models.
+
+    For now, this function simply:
+
+    - Rebuilds player_gameweeks.csv (cleaned GW data).
+    - Copies it to player_gameweeks_lagged.csv.
+
+    The lag features (points_lag_1, points_lag_2, etc.) are computed
+    dynamically inside model.py (functions _add_anytime_lags,
+    _add_seasonal_lags_with_prev5, prepare_gw_lag_dataset).
+    """
+    gw_path = build_player_gameweeks(raw_path)
+    df = pd.read_csv(gw_path)
+
+    df.to_csv(PLAYER_GW_LAGGED_FILE, index=False)
+    return PLAYER_GW_LAGGED_FILE
 
 
 def run_pipeline() -> Path:
     """
-    Run the full SEASON-LEVEL pipeline:
-    - load the three raw datasets
-    - normalise the 2024-25 dataset
-    - select useful columns
-    - add a 'season' column
-    - concatenate all seasons
-    - save the final dataset to data/processed/
+    Main entry point used by the CLI.
 
-    Returns:
-        Path to the saved CSV file.
+    Runs the gameweek-level pipeline and returns the path to
+    player_gameweeks_lagged.csv (the file used in model.py).
     """
-
-    # Load the 3 raw season datasets
-    df22 = pd.read_csv(DATA_RAW_DIR / "season22-23.csv")
-    df23 = pd.read_csv(DATA_RAW_DIR / "season23-24.csv")
-    df24 = pd.read_csv(DATA_RAW_DIR / "season24-25.csv")
-
-    # Normalise the 2024-25 dataset so that it matches the others
-
-    # 1) Rename columns to match the other seasons
-    rename_24 = {
-        "first_name": "first",
-        "second_name": "second",
-        "player_position": "position",
-        "team_name": "team",
-    }
-    df24 = df24.rename(columns=rename_24)
-
-    # 2) Build a "name" column from "first" and "second"
-    df24["name"] = df24["first"].str.strip() + " " + df24["second"].str.strip()
-
-    # 3) Drop the temporary columns
-    df24 = df24.drop(columns=["first", "second"])
-
-    # Keep only useful columns for each season
-    df22_useful = select_useful(df22)
-    df23_useful = select_useful(df23)
-    df24_useful = select_useful(df24)
-
-    # Add season information (kept outside USEFUL_COLS on purpose)
-    df22_useful["season"] = "2022-23"
-    df23_useful["season"] = "2023-24"
-    df24_useful["season"] = "2024-25"
-
-    # Concatenate the three seasons
-    full = pd.concat([df22_useful, df23_useful, df24_useful], ignore_index=True)
-
-    # Create the output folder, save the cleaned dataset into it, and return the file path
-    DATA_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = DATA_PROCESSED_DIR / "players_all_seasons.csv"
-    full.to_csv(out_path, index=False)
-
-    return out_path
+    return build_player_gameweeks_lagged()
 
 
-# GAMEWEEK-LEVEL PIPELINE 
-
-# Raw gameweek file (one line = player, season, gameweek)
-# You can create this CSV file from Kaggle (via src.fpl_kaggle_import)
-RAW_GAMEWEEK_FILE = DATA_RAW_DIR / "player_gameweeks_raw.csv"
-
-# Cleaned gameweek file
-PROCESSED_GAMEWEEK_FILE = DATA_PROCESSED_DIR / "player_gameweeks.csv"
-
-# Lagged gameweek file (with lag features)
-LAGGED_GAMEWEEK_FILE = DATA_PROCESSED_DIR / "player_gameweeks_lagged.csv"
-
-# Useful columns at gameweek level
-GAMEWEEK_COLS = [
-    "player_id",
-    "name",
-    "team",
-    "position",
-    "season",
-    "gameweek",
-    "minutes",
-    "goals_scored",
-    "assists",
-    "expected_goals",
-    "expected_assists",
-    "points",
-]
-
-
-def build_gameweek_dataset() -> Path:
-    """
-    Build a tidy per-player-per-gameweek dataset from raw FPL data.
-
-    Expected raw file
-    -----------------
-    RAW_GAMEWEEK_FILE should point to a CSV with (at least) columns similar to:
-    - id / element (player id)
-    - name / web_name
-    - team / team_name
-    - position
-    - season / season_name
-    - gameweek / round
-    - minutes, goals_scored, assists, xG, xA, total_points, ...
-
-    Returns
-    -------
-    Path
-        Path to the processed CSV file (player_gameweeks.csv).
-    """
-    if not RAW_GAMEWEEK_FILE.exists():
-        raise FileNotFoundError(
-            f"Raw gameweek file not found: {RAW_GAMEWEEK_FILE}. "
-            "Please create it or update RAW_GAMEWEEK_FILE in data_pipeline.py."
-        )
-
-    df = pd.read_csv(RAW_GAMEWEEK_FILE)
-
-    # Rename raw columns to our standardised names
-    # We build a flexible mapping: only the keys present will be used.
-    rename_map = {
-        "id": "player_id",
-        "element": "player_id",
-        "web_name": "name",
-        "name": "name",
-        "team": "team",
-        "team_name": "team",
-        "position": "position",
-        "season_name": "season",
-        "season": "season",
-        "round": "gameweek",
-        "gw": "gameweek",
-        "gameweek": "gameweek",
-        "minutes": "minutes",
-        "goals_scored": "goals_scored",
-        "assists": "assists",
-        "xG": "expected_goals",
-        "expected_goals": "expected_goals",
-        "xA": "expected_assists",
-        "expected_assists": "expected_assists",
-        "total_points": "points",
-        "points": "points",
-    }
-    rename_map = {k: v for k, v in rename_map.items() if k in df.columns}
-    df = df.rename(columns=rename_map)
-
-    # Keep only the useful columns that actually exist
-    existing_cols = [c for c in GAMEWEEK_COLS if c in df.columns]
-    df = df[existing_cols].copy()
-
-    # Minimal cleaning: remove lines without id/season/gameweek
-    for col in ["player_id", "season", "gameweek"]:
-        if col in df.columns:
-            df = df.dropna(subset=[col])
-
-    # Logical sorting
-    sort_cols = [c for c in ["season", "gameweek", "player_id"] if c in df.columns]
-    if sort_cols:
-        df["gameweek"] = df["gameweek"].astype(int)
-        df = df.sort_values(sort_cols).reset_index(drop=True)
-
-    # Save
-    DATA_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = PROCESSED_GAMEWEEK_FILE
-    df.to_csv(out_path, index=False)
-
-    return out_path
-
-
-def load_gameweek_data() -> pd.DataFrame:
-    """
-    Load the per-player-per-gameweek dataset.
-
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame with one row per (player, season, gameweek).
-
-    Raises
-    ------
-    FileNotFoundError
-        If the processed file does not exist (run build_gameweek_dataset() first).
-    """
-    if not PROCESSED_GAMEWEEK_FILE.exists():
-        raise FileNotFoundError(
-            f"Processed gameweek file not found: {PROCESSED_GAMEWEEK_FILE}. "
-            "Run build_gameweek_dataset() first."
-        )
-
-    return pd.read_csv(PROCESSED_GAMEWEEK_FILE)
-
-
-def build_lagged_gameweek_dataset(
-    max_lag: int = 3,
-    rolling_window: int = 3,
-) -> Path:
-    """
-    Build a gameweek-level dataset with lagged features for each player.
-
-    For each (season, player_id), the rows are sorted by gameweek and we create:
-    - points_lag_1, ..., points_lag_{max_lag}
-    - points_rolling_mean_<rolling_window>
-
-    Returns
-    -------
-    Path
-        Path to the processed CSV file (player_gameweeks_lagged.csv).
-    """
-    df = load_gameweek_data()
-
-    required_cols = ["season", "player_id", "gameweek", "points"]
-    missing = [c for c in required_cols if c not in df.columns]
-    if missing:
-        raise ValueError(
-            f"Missing required columns in gameweek data: {missing}. "
-            "Check build_gameweek_dataset() or your raw files."
-        )
-
-    # Sort by season, player, gameweek
-    df["gameweek"] = df["gameweek"].astype(int)
-    df = df.sort_values(["season", "player_id", "gameweek"]).reset_index(drop=True)
-
-    group = df.groupby(["season", "player_id"], group_keys=False)
-
-    # Lag features on points
-    for lag in range(1, max_lag + 1):
-        df[f"points_lag_{lag}"] = group["points"].shift(lag)
-
-    # Rolling mean over last `rolling_window` gameweeks
-    df[f"points_rolling_mean_{rolling_window}"] = (
-        group["points"]
-        .rolling(window=rolling_window, min_periods=rolling_window)
-        .mean()
-        .reset_index(level=[0, 1], drop=True)
-    )
-
-    # Drop rows without full lag history
-    lag_cols = [f"points_lag_{lag}" for lag in range(1, max_lag + 1)]
-    lag_cols.append(f"points_rolling_mean_{rolling_window}")
-    df = df.dropna(subset=lag_cols).reset_index(drop=True)
-
-    DATA_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-    df.to_csv(LAGGED_GAMEWEEK_FILE, index=False)
-
-    return LAGGED_GAMEWEEK_FILE
 
 
 # When we run this script directly, launch the SEASON pipeline and display the output file path
