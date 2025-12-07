@@ -13,10 +13,10 @@ Main features:
   match by match, for a given season.
 """
 
-
 from pathlib import Path
 from typing import Tuple
-
+from sklearn.linear_model import LinearRegression
+import numpy as np
 import pandas as pd
 
 # Project structure
@@ -240,8 +240,6 @@ def compare_model_vs_bookmakers(
     - A logistic transformation is calibrated so that
       strength_diff -> probability matches Bet365 as closely as possible.
     """
-    from sklearn.linear_model import LinearRegression
-    import numpy as np
 
     odds = load_clean_odds()
     fixtures = load_fixtures()
@@ -445,6 +443,38 @@ def compare_model_vs_bookmakers(
 
     return comp, mae, corr
 
+
+
+def print_example_matches(comp: pd.DataFrame, n: int = 10) -> None:
+    """
+    Displays a few sample matches, sorted by the largest absolute discrepancy
+between the model and Bet365
+    """
+    if comp.empty:
+        print("No matches to display.")
+        return
+
+    examples = (
+        comp.sort_values("abs_error", ascending=False)
+        .head(n)
+    )
+
+    print("Example matches (sorted by largest absolute disagreement):")
+    print("-" * 80)
+    for _, row in examples.iterrows():
+        season = row["season"]
+        gw = int(row["gameweek"])
+        home = row["home_team"]
+        away = row["away_team"]
+        p_bookie = row["pnorm_home_win"]
+        p_model = row["p_model_home_win"]
+        diff = p_model - p_bookie
+
+        print(f"{season} GW{gw}: {home} vs {away}")
+        print(f"  Bet365 home-win prob : {p_bookie:.3f}")
+        print(f"  Model home-win prob  : {p_model:.3f}")
+        print(f"  Difference (model - Bet365): {diff:+.3f}")
+        print()
 
 
 
