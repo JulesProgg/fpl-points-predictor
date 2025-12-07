@@ -1,4 +1,5 @@
 import typer
+import math 
 
 from src.data_pipeline import run_pipeline
 from src.model import (
@@ -14,6 +15,7 @@ from src.model import (
 from src.bookmaker_benchmark import (
     build_team_strength_table,
     compare_model_vs_bookmakers,
+    _normalise_season_str,
 )
 
 app = typer.Typer(help="FPL Points Predictor CLI – Gameweek-level models (2016–2023)")
@@ -114,7 +116,7 @@ def run(
 
 
 # ----------------------------------------------------------------------
-# 3) SHOW BOOKMAKER STRENGTH (MULTI-SEASON)
+# 3) SHOW BOOKMAKER TEAM STRENGTH (MULTI-SEASON)
 # ----------------------------------------------------------------------
 @app.command()
 def show_bookmakers() -> None:
@@ -209,9 +211,15 @@ def compare_vs_bookmakers(
         p_model_home_win = home_strength / (home_strength + away_strength)
 
     Output:
-        - Prints the MAE between model and Bet365 probabilities.
+        - Prints the MAE and correlation between model and Bet365 probabilities.
         - Displays a few example matches with both probabilities.
     """
+    # -----------------------------------------------------------
+    # NEW: normalise la saison entrée par l'utilisateur
+    # -----------------------------------------------------------
+    from src.bookmaker_benchmark import _normalise_season_str
+    test_season = _normalise_season_str(test_season)
+
     valid_models = {
         "gw_lag3",
         "gw_lag5",
@@ -226,26 +234,27 @@ def compare_vs_bookmakers(
             "gw_seasonal_linear, gw_seasonal_gbm."
         )
 
-    comp, mae = compare_model_vs_bookmakers(model=model, test_season=test_season)
+    comp, mae, corr = compare_model_vs_bookmakers(model=model, test_season=test_season)
 
     typer.echo(
         f"Match-by-match comparison vs Bet365 – Season {test_season}, model={model}"
     )
-    typer.echo(f"Mean Absolute Error (model vs Bet365 home-win prob): {mae:.3f}\n")
+    typer.echo(f"Mean Absolute Error (model vs Bet365 home-win prob): {mae:.3f}")
 
-    typer.echo("Example matches:")
+    if math.isnan(corr):
+        typer.echo("Correlation: undefined (probabilities are constant).")
+    else:
+        typer.echo(f"Correlation (model vs Bet365 home-win prob): {corr:.3f}")
+
+    typer.echo("\nExample matches:")
     typer.echo("-" * 80)
     for _, row in comp.head(max_rows).iterrows():
         gw = int(row["gameweek"])
         home = str(row["home_team"])
         away = str(row["away_team"])
         p_b365 = float(row["pnorm_home_win"])
-        p_model = float(row["p_model_home_win"])
-        err = float(row["abs_error"])
-        typer.echo(
-            f"GW{gw:>2}  {home:<20} vs {away:<20}  "
-            f"Bet365: {p_b365:.3f}  |  Model: {p_model:.3f}  |  |Δ|={err:.3f}"
-        )
+
+
 
 
 if __name__ == "__main__":

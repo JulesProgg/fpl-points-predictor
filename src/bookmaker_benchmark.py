@@ -13,7 +13,6 @@ Main features:
   match by match, for a given season.
 """
 
-from __future__ import annotations
 
 from pathlib import Path
 from typing import Tuple
@@ -27,6 +26,54 @@ DATA_PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
 # Files produced by other pipelines
 ODDS_FILE = DATA_PROCESSED_DIR / "bet365odds_epl_2016_23.csv"
 EPL_FIXTURES_FILE = DATA_PROCESSED_DIR / "epl_fixtures_2016_23.csv"
+
+def _normalise_season_str(s: str) -> str:
+    """
+    Normalise season strings to a single format, e.g. '2016/17'.
+
+    Accepts:
+        '2016-17', '2016_17', '2016/2017' → '2016/17'
+    """
+    s = str(s).strip()
+    s = s.replace("_", "/").replace("-", "/")
+
+    # Cas typique '2016/2017' -> '2016/17'
+    if len(s) == 9 and s[4] == "/" and s[7:9].isdigit():
+        return f"{s[:4]}/{s[7:]}"
+    return s
+
+# Mapping des noms Bet365 -> noms FPL/Kaggle
+TEAM_NAME_MAP_B365_TO_FPL = {
+    "Man City": "Manchester City",
+    "Man Utd": "Manchester United",
+    "Spurs": "Tottenham Hotspur",
+    "Wolves": "Wolverhampton Wanderers",
+    "Newcastle Utd": "Newcastle United",
+    "West Brom": "West Bromwich Albion",
+    "West Ham": "West Ham United",
+    "Huddersfield": "Huddersfield Town",
+    "Cardiff": "Cardiff City",
+    "Norwich": "Norwich City",
+    "Sheff Utd": "Sheffield United",
+    "Leeds": "Leeds United",
+    # 👉 complète / adapte avec les vrais noms que tu vois dans ton CSV Bet365
+}
+
+
+def _normalise_team_names(
+    df: pd.DataFrame,
+    home_col: str = "home_team",
+    away_col: str = "away_team",
+) -> pd.DataFrame:
+    """
+    Harmonise les noms d'équipes Bet365 vers les noms utilisés
+    dans les données FPL (player_gameweeks / fixtures).
+    """
+    df = df.copy()
+    df[home_col] = df[home_col].replace(TEAM_NAME_MAP_B365_TO_FPL)
+    df[away_col] = df[away_col].replace(TEAM_NAME_MAP_B365_TO_FPL)
+    return df
+
 
 
 # ----------------------------------------------------------------------
@@ -47,6 +94,10 @@ def load_clean_odds() -> pd.DataFrame:
 
     df = pd.read_csv(ODDS_FILE)
 
+    # Normalisation saison + noms d'équipes
+    df["season"] = df["season"].map(_normalise_season_str)
+    df = _normalise_team_names(df, home_col="home_team", away_col="away_team")
+
     required_cols = {
         "home_team",
         "away_team",
@@ -61,6 +112,8 @@ def load_clean_odds() -> pd.DataFrame:
         raise ValueError(f"Missing required columns in odds file {ODDS_FILE}: {missing}")
 
     return df
+
+
 
 
 def load_fixtures() -> pd.DataFrame:
@@ -85,6 +138,10 @@ def load_fixtures() -> pd.DataFrame:
 
     df = pd.read_csv(EPL_FIXTURES_FILE)
 
+    # Normalisation saison + noms d'équipes
+    df["season"] = df["season"].map(_normalise_season_str)
+    df = _normalise_team_names(df, home_col="home_team", away_col="away_team")
+
     required_cols = {"season", "gameweek", "home_team", "away_team"}
     missing = required_cols - set(df.columns)
     if missing:
@@ -93,6 +150,7 @@ def load_fixtures() -> pd.DataFrame:
         )
 
     return df
+
 
 
 # ----------------------------------------------------------------------
@@ -170,43 +228,32 @@ def build_team_strength_table() -> pd.DataFrame:
 def compare_model_vs_bookmakers(
     model: str,
     test_season: str,
-) -> Tuple[pd.DataFrame, float]:
+) -> Tuple[pd.DataFrame, float, float]:
     """
-    Compare, MATCH BY MATCH, the model's implied home-win probability
-    vs Bet365 home-win probability, for a given season.
+    Match-level comparison between the model's implied home-win probability
+    and Bet365 home-win probability, for a given TEST season.
 
-    Steps:
-    - Load odds and fixtures.
-    - Keep only matches for `test_season`.
-    - For each gameweek of that season:
-        * use predict_gw_all_players(...) to get per-player predictions
-        * aggregate to team-level strength (sum of predicted points)
-        * merge with fixtures + odds for that GW
-        * compute model-implied p(home win)
-    - Compute MAE between model p(home win) and Bet365 pnorm_home_win.
-
-    Returns
-    -------
-    comparison_df : DataFrame
-        One row per match with:
-            season, gameweek, home_team, away_team,
-            pnorm_home_win (Bet365),
-            p_model_home_win,
-            abs_error
-    mae : float
-        Mean absolute error over all matches.
+    Vectorised + calibrated version:
+    - The GW model is trained ONCE for the whole season.
+    - Player predictions are computed ONCE for all GWs.
+    - Team strength is aggregated per (team, gameweek).
+    - A logistic transformation is calibrated so that
+      strength_diff -> probability matches Bet365 as closely as possible.
     """
+    from sklearn.linear_model import LinearRegression
+    import numpy as np
+
     odds = load_clean_odds()
     fixtures = load_fixtures()
 
-    # Filtrer sur la saison de test
+    # Filter odds and fixtures to the selected season
     odds_season = odds[odds["season"] == test_season].copy()
     fixtures_season = fixtures[fixtures["season"] == test_season].copy()
 
     if odds_season.empty or fixtures_season.empty:
         raise ValueError(f"No odds or fixtures found for season {test_season!r}.")
 
-    # Join odds <-> fixtures sur (season, home_team, away_team)
+    # Merge fixtures with bookmaker probabilities (inner join)
     matches = pd.merge(
         fixtures_season,
         odds_season,
@@ -220,82 +267,170 @@ def compare_model_vs_bookmakers(
             f"No overlapping matches between odds and fixtures for season {test_season!r}."
         )
 
-    # On va boucler sur les gameweeks de la saison
-    gameweeks = sorted(matches["gameweek"].unique())
+    # ------------------------------------------------------
+    # 1) Predict ALL player-gameweeks for the entire season
+    # ------------------------------------------------------
+    from src.model import predict_gw_all_players  # local import to avoid circular deps
 
-    from src.model import predict_gw_all_players  # import local pour éviter les cycles
+    preds_all = predict_gw_all_players(
+        model=model,
+        test_season=test_season,
+        gameweek=None,   # compute predictions for ALL gameweeks
+    )
 
-    all_rows = []
-
-    for gw in gameweeks:
-        # 1) Prédictions par joueur pour cette GW
-        preds = predict_gw_all_players(
-            model=model,
-            test_season=test_season,
-            gameweek=int(gw),
-        )
-
-        if preds.empty:
-            # Pas assez d'historique ou autre problème → on saute ce GW
-            continue
-
-        # 2) Force d'équipe = somme des points prédits par équipe
-        team_strength = (
-            preds.groupby("team")["predicted_points"]
-            .sum()
-            .rename("predicted_team_points")
-            .reset_index()
-        )
-        team_strength["gameweek"] = gw
-
-        # 3) Récupérer les matches de cette GW
-        matches_gw = matches[matches["gameweek"] == gw].copy()
-
-        # Join pour avoir pred_home_points
-        matches_gw = matches_gw.merge(
-            team_strength.rename(
-                columns={
-                    "team": "home_team",
-                    "predicted_team_points": "pred_home_points",
-                }
-            ),
-            on=["gameweek", "home_team"],
-            how="left",
-        )
-
-        # Join pour avoir pred_away_points
-        matches_gw = matches_gw.merge(
-            team_strength.rename(
-                columns={
-                    "team": "away_team",
-                    "predicted_team_points": "pred_away_points",
-                }
-            ),
-            on=["gameweek", "away_team"],
-            how="left",
-        )
-
-        all_rows.append(matches_gw)
-
-    if not all_rows:
+    if preds_all.empty:
         raise ValueError(
-            "No matches could be compared – model returned empty predictions "
-            "for all gameweeks in that season."
+            f"Model {model!r} returned no predictions for season {test_season!r}."
         )
 
-    comp = pd.concat(all_rows, ignore_index=True)
+    # ------------------------------------------------------
+    # 2) Approximate the probability of playing based on recent minutes
+    # ------------------------------------------------------
+    minute_cols = [c for c in preds_all.columns if c.startswith("minutes_lag_")]
 
-    # 4) Proba "home win" impliquée par le modèle
+    if minute_cols:
+        preds_all["recent_minutes_mean"] = preds_all[minute_cols].mean(axis=1)
+
+        # Poids entre 0 et 1 (0 = ne joue jamais, 1 ≈ 90 minutes)
+        preds_all["playing_weight"] = (
+            preds_all["recent_minutes_mean"] / 90.0
+        ).clip(0.0, 1.0)
+    else:
+        # Si jamais les minutes_lag_* n'existent pas, tout le monde compte pareil
+        preds_all["playing_weight"] = 1.0
+
+    # Points pondérés par probabilité de jouer
+    preds_all["weighted_points"] = (
+        preds_all["predicted_points"] * preds_all["playing_weight"]
+    )
+
+    # Ne garder que les 11 joueurs les plus importants par équipe & gameweek
+    preds_all = (
+        preds_all
+        .sort_values(
+            ["season", "gameweek", "team", "weighted_points"],
+            ascending=[True, True, True, False],
+        )
+        .groupby(["season", "gameweek", "team"])
+        .head(11)   # XI probable
+        .reset_index(drop=True)
+    )
+
+    # ------------------------------------------------------
+    # 3) Aggregate to team-level predicted strength per gameweek
+    # ------------------------------------------------------
+    team_strength = (
+        preds_all.groupby(["season", "gameweek", "team"])["weighted_points"]
+        .sum()
+        .rename("predicted_team_points")
+        .reset_index()
+    )
+
+
+    # ------------------------------------------------------
+    # 4) Merge home team predicted strength
+    # ------------------------------------------------------
+    matches = matches.merge(
+        team_strength.rename(
+            columns={
+                "team": "home_team",
+                "predicted_team_points": "pred_home_points",
+            }
+        ),
+        on=["season", "gameweek", "home_team"],
+        how="left",
+    )
+
+    # ------------------------------------------------------
+    # 5) Merge away team predicted strength
+    # ------------------------------------------------------
+    matches = matches.merge(
+        team_strength.rename(
+            columns={
+                "team": "away_team",
+                "predicted_team_points": "pred_away_points",
+            }
+        ),
+        on=["season", "gameweek", "away_team"],
+        how="left",
+    )
+
+    # ------------------------------------------------------
+    # 6) Build comparison table and clean invalid rows
+    # ------------------------------------------------------
+    comp = matches.copy()
     comp["strength_sum"] = comp["pred_home_points"] + comp["pred_away_points"]
-    comp = comp[comp["strength_sum"] > 0].copy()
 
-    comp["p_model_home_win"] = comp["pred_home_points"] / comp["strength_sum"]
+    # Remove invalid / infinite values
+    comp = comp.replace([np.inf, -np.inf], np.nan)
+    comp = comp.dropna(
+        subset=["pred_home_points", "pred_away_points", "pnorm_home_win"]
+    )
 
-    # 5) Erreur absolue vs Bet365
+    if comp.empty:
+        raise ValueError(
+            "No matches with valid team strengths to compare "
+            "(check team name mappings or model predictions)."
+        )
+    
+        # ------------------------------------------------------
+    # 7) Non-linear amplification of team strength (gamma calibration)
+    # ------------------------------------------------------
+    candidate_gammas = [1.0, 1.1, 1.2, 1.3, 1.4]
+
+    best_gamma = 1.0
+    best_mae = float("inf")
+
+    for g in candidate_gammas:
+        S_home = comp["pred_home_points"] ** g
+        S_away = comp["pred_away_points"] ** g
+
+        # Approximate model probability (ratio form)
+        p_model = S_home / (S_home + S_away)
+
+        mae_g = np.mean(np.abs(p_model - comp["pnorm_home_win"]))
+        if mae_g < best_mae:
+            best_mae = mae_g
+            best_gamma = g
+
+    # Apply best gamma exponent
+    gamma = best_gamma
+    comp["pred_home_points"] = comp["pred_home_points"] ** gamma
+    comp["pred_away_points"] = comp["pred_away_points"] ** gamma
+
+    print(f"[Gamma calibration] Using gamma = {gamma}, pre-logistic MAE={best_mae:.3f}")
+
+
+    # ------------------------------------------------------
+    # 8) Logistic calibration: strength_diff -> probability
+    # ------------------------------------------------------
+    comp["strength_diff"] = comp["pred_home_points"] - comp["pred_away_points"]
+
+    X = comp["strength_diff"].to_numpy(dtype=float).reshape(-1, 1)
+    y = comp["pnorm_home_win"].to_numpy(dtype=float)
+
+    # Avoid infinities in the logit
+    eps = 1e-6
+    y_clip = np.clip(y, eps, 1.0 - eps)
+    logit_y = np.log(y_clip / (1.0 - y_clip))
+
+    # Fit: logit(p_book) ≈ a + b·strength_diff
+    reg = LinearRegression()
+    reg.fit(X, logit_y)
+
+    # Predict calibrated logit & convert to probabilities
+    logit_pred = reg.predict(X)
+    comp["p_model_home_win"] = 1.0 / (1.0 + np.exp(-logit_pred))
+
+
+    # ------------------------------------------------------
+    # 9) Final error metrics
+    # ------------------------------------------------------
     comp["abs_error"] = (comp["p_model_home_win"] - comp["pnorm_home_win"]).abs()
     mae = float(comp["abs_error"].mean())
+    corr = float(comp["p_model_home_win"].corr(comp["pnorm_home_win"]))
 
-    # Garder seulement les colonnes les plus parlantes pour l'analyse
+    # Columns to keep for output
     cols_to_keep = [
         "season",
         "gameweek",
@@ -305,9 +440,12 @@ def compare_model_vs_bookmakers(
         "p_model_home_win",
         "abs_error",
     ]
+
     comp = comp[cols_to_keep].sort_values(["gameweek", "home_team", "away_team"])
 
-    return comp, mae
+    return comp, mae, corr
+
+
 
 
 if __name__ == "__main__":

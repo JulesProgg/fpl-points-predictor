@@ -38,7 +38,8 @@ from src.data_pipeline import DATA_PROCESSED_DIR
 # ---------------------------------------------------------------------
 
 # Gameweek-level data (no lags in file; lags are computed here)
-PLAYER_GW_LAGGED_DATA = DATA_PROCESSED_DIR / "player_gameweeks_lagged.csv"
+# We now directly use the clean GW file produced by data_pipeline.py
+PLAYER_GW_LAGGED_DATA = DATA_PROCESSED_DIR / "player_gameweeks.csv"
 
 # ---------------------------------------------------------------------
 # DATA LOADING & UTILS
@@ -123,68 +124,60 @@ def _add_anytime_lags(
     return df
 
 
-def _add_seasonal_lags_with_prev5(
-    df: pd.DataFrame,
-    max_lag: int = 5,
-    prev_season_gws: int = 5,
-) -> pd.DataFrame:
+def _add_seasonal_lags_with_prev5(df: pd.DataFrame, max_lag: int = 5) -> pd.DataFrame:
     """
-    Add "seasonal" lag features:
-
-    - Within a season: for GW > 1, lags come only from the same season.
-    - For GW1 of a season: lags are built from the last `prev_season_gws`
-      gameweeks of the previous season (if available).
-
-    This matches the idea:
-        "Only use the current season, except for the first gameweek
-         which uses the last N gameweeks of the previous season."
+    Version rapide :
+    - Crée d'abord des lags "anytime" (toute l’histoire du joueur).
+    - Crée ensuite des lags "season-only".
+    - Pour les débuts de saison, remplace les NaN saisonniers par les lags anytime.
+    - Vectorisé, aucun loop Python => extrêmement rapide.
     """
     df = df.sort_values(["player_id", "season", "gameweek"]).copy()
-    seasons = sorted(df["season"].unique())
 
-    # 1) Same-season lags via groupby(player, season)
+    # ANYTIME lags (global history)
+    grouped_player = df.groupby("player_id")
+    for lag in range(1, max_lag + 1):
+        df[f"points_lag_any_{lag}"] = grouped_player["points"].shift(lag)
+
+    # SEASON-only lags (intrablock)
     grouped_season = df.groupby(["player_id", "season"])
     for lag in range(1, max_lag + 1):
-        df[f"points_lag_{lag}"] = grouped_season["points"].shift(lag)
+        seasonal = f"points_lag_{lag}"
+        anytime = f"points_lag_any_{lag}"
+        df[seasonal] = grouped_season["points"].shift(lag)
 
-    # 2) For each season (except the first), patch GW1 from previous season
-    for i, season in enumerate(seasons):
-        if i == 0:
-            continue  # no previous season available
+        # BEGIN OF SEASON = fallback vers anytime
+        df[seasonal] = df[seasonal].fillna(df[anytime])
 
-        prev_season = seasons[i - 1]
-
-        # Rows of GW1 in the current season
-        curr_gw1_mask = (df["season"] == season) & (df["gameweek"] == 1)
-
-        # Last prev_season_gws rows of previous season per player
-        prev_df = (
-            df[df["season"] == prev_season]
-            .sort_values(["player_id", "gameweek"])
-            .groupby("player_id")
-            .tail(prev_season_gws)
-        )
-
-        # For each player, fill lags of GW1 from the previous season
-        for player_id, sub in prev_df.groupby("player_id"):
-            points_list = sub["points"].tolist()
-            if not points_list:
-                continue
-
-            # target rows = GW1 of current season for this player
-            target_mask = curr_gw1_mask & (df["player_id"] == player_id)
-
-            # Fill up to max_lag (from the end of points_list)
-            for lag in range(1, max_lag + 1):
-                if len(points_list) >= lag:
-                    val = points_list[-lag]
-                    df.loc[target_mask, f"points_lag_{lag}"] = val
-
-    # 3) A simple mean over the available lags
+    # average lag
     lag_cols = [f"points_lag_{k}" for k in range(1, max_lag + 1)]
     df["points_lag_mean"] = df[lag_cols].mean(axis=1)
 
+    # clean intermediate columns
+    df = df.drop(columns=[f"points_lag_any_{k}" for k in range(1, max_lag + 1)])
+
     return df
+
+
+def _add_minute_lags(df: pd.DataFrame, max_lag: int = 3) -> pd.DataFrame:
+    """
+    Add lagged minutes columns per player and season:
+    minutes_lag_1, minutes_lag_2, ..., minutes_lag_{max_lag}.
+    """
+    if "minutes" not in df.columns:
+        return df  # do nothing
+
+    df = df.sort_values(["player_id", "season", "gameweek"])
+    group = df.groupby(["player_id", "season"], group_keys=False)
+
+    for k in range(1, max_lag + 1):
+        df[f"minutes_lag_{k}"] = group["minutes"].shift(k)
+
+    return df
+
+
+
+
 
 
 def _build_gw_features_and_target(
@@ -292,9 +285,9 @@ def evaluate_linear_gw_model_seasonal(
         points_lag_mean
     """
     df = load_player_gameweeks_lagged()
-    df = _add_seasonal_lags_with_prev5(df, max_lag=5, prev_season_gws=5)
+    df = _add_seasonal_lags_with_prev5(df, max_lag=5)
 
-    feature_cols = [f"points_lag_{k}" for k in range(1, 6)]
+    feature_cols = [f"points_lag_{k}" for k in range(1, 4)]
     feature_cols.append("points_lag_mean")
 
     train_df = df[df["season"] != test_season].copy()
@@ -326,9 +319,9 @@ def evaluate_gbm_gw_model_seasonal(
         points_lag_mean
     """
     df = load_player_gameweeks_lagged()
-    df = _add_seasonal_lags_with_prev5(df, max_lag=5, prev_season_gws=5)
+    df = _add_seasonal_lags_with_prev5(df, max_lag=5)
 
-    feature_cols = [f"points_lag_{k}" for k in range(1, 6)]
+    feature_cols = [f"points_lag_{k}" for k in range(1, 4)]
     feature_cols.append("points_lag_mean")
 
     train_df = df[df["season"] != test_season].copy()
@@ -391,6 +384,10 @@ def predict_gw_all_players(
         player_id, name, team, position, season, gameweek, predicted_points
     """
     df = load_player_gameweeks_lagged()
+
+    # Add minute lags (to approximate the probability of playing)
+    df = _add_minute_lags(df, max_lag=3)
+
 
     cols_out = [
         "player_id",
@@ -461,9 +458,9 @@ def predict_gw_all_players(
     # SEASONAL LINEAR MODEL
     # ------------------------------------------------------------------
     elif model in {"gw_seasonal_linear", "gw_seasonal"}:
-        df = _add_seasonal_lags_with_prev5(df, max_lag=5, prev_season_gws=5)
+        df = _add_seasonal_lags_with_prev5(df, max_lag=5)
 
-        feature_cols = [f"points_lag_{k}" for k in range(1, 6)]
+        feature_cols = [f"points_lag_{k}" for k in range(1, 4)]
         feature_cols.append("points_lag_mean")
 
         train_df = df[df["season"] != test_season].copy()
@@ -511,9 +508,9 @@ def predict_gw_all_players(
     # SEASONAL GBM MODEL
     # ------------------------------------------------------------------
     elif model == "gw_seasonal_gbm":
-        df = _add_seasonal_lags_with_prev5(df, max_lag=5, prev_season_gws=5)
+        df = _add_seasonal_lags_with_prev5(df, max_lag=5)
 
-        feature_cols = [f"points_lag_{k}" for k in range(1, 6)]
+        feature_cols = [f"points_lag_{k}" for k in range(1, 4)]
         feature_cols.append("points_lag_mean")
 
         train_df = df[df["season"] != test_season].copy()
@@ -571,7 +568,26 @@ def predict_gw_all_players(
 
     test_df["predicted_points"] = y_pred
 
-    return test_df[cols_out].sort_values(["season", "gameweek", "team", "name"])
+    # Also allow for any delays of several minutes, if they occur
+    minute_cols = [c for c in test_df.columns if c.startswith("minutes_lag_")]
+
+    cols_out = [
+        "player_id",
+        "name",
+        "team",
+        "position",
+        "season",
+        "gameweek",
+        "predicted_points",
+    ]
+    cols_out_extended = cols_out + minute_cols
+
+    return test_df[cols_out_extended].sort_values(
+        ["season", "gameweek", "team", "name"]
+    )
+
+
+
 
 
 # ---------------------------------------------------------------------
