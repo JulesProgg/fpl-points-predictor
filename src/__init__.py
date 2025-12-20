@@ -9,6 +9,8 @@ from .data_loader import (
     RENAME_MAP,
 )
 
+from .models import predict_gw_all_players
+
 __all__ = [
     "load_player_gameweeks",
     "load_clean_odds",
@@ -18,7 +20,9 @@ __all__ = [
     "load_raw_odds",
     "TARGET_COLUMNS",
     "RENAME_MAP",
+    "predict_gw_all_players",
 ]
+
 
 
 
