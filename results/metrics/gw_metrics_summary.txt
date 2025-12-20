@@ -1,0 +1,1 @@
+Hold-out season 2022/23: best GW model by MAE is gbm_seasonal (MAE=1.122, RMSE=2.025, R2=0.263, Spearman=0.693).

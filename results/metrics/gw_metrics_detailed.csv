@@ -1,0 +1,5 @@
+model_key,test_season,n_obs,mae,rmse,r2,spearman
+gbm_seasonal,2022/23,26391,1.122,2.025,0.263,0.693
+linear_seasonal,2022/23,26391,1.217,2.083,0.22,0.666
+linear_anytime_lag5,2022/23,26327,1.219,2.086,0.22,0.666
+linear_anytime_lag3,2022/23,26391,1.248,2.105,0.204,0.67

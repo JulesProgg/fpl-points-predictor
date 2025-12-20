@@ -338,6 +338,29 @@ def _compute_mae(y_true, y_pred) -> float:
     return float(np.mean(np.abs(y_true[mask] - y_pred[mask])))
 
 
+
+def _compute_spearman(y_true, y_pred) -> float:
+    """
+    Compute Spearman rank correlation between y_true and y_pred.
+    NaN pairs are ignored.
+    """
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+
+    mask = ~np.isnan(y_true) & ~np.isnan(y_pred)
+    if not np.any(mask):
+        raise ValueError("No valid (y_true, y_pred) pairs to compute Spearman.")
+
+    # pandas handles ranking + ties robustly
+    return float(
+        pd.Series(y_true[mask]).corr(
+            pd.Series(y_pred[mask]),
+            method="spearman",
+        )
+    )
+
+
+
 def _build_gw_features_and_target(
     df: pd.DataFrame,
     feature_cols: list[str],
@@ -568,3 +591,125 @@ def evaluate_gradient_boosting_model(test_season: str = "2022/23") -> float:
     Legacy alias kept for backward compatibility.
     """
     return evaluate_gbm_gw_model_seasonal(test_season=test_season)
+
+
+# ---------------------------------------------------------------------
+# USEFUL FUNCTIONS FOR METRICS AND PLOTS VISUALISATION
+# ---------------------------------------------------------------------
+
+def _compute_rmse(y_true, y_pred) -> float:
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+
+    mask = ~np.isnan(y_true) & ~np.isnan(y_pred)
+    if not np.any(mask):
+        raise ValueError("No valid (y_true, y_pred) pairs to compute RMSE (all NaN).")
+
+    return float(np.sqrt(np.mean((y_true[mask] - y_pred[mask]) ** 2)))
+
+
+def _compute_r2(y_true, y_pred) -> float:
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+
+    mask = ~np.isnan(y_true) & ~np.isnan(y_pred)
+    if not np.any(mask):
+        raise ValueError("No valid (y_true, y_pred) pairs to compute R2 (all NaN).")
+
+    yt = y_true[mask]
+    yp = y_pred[mask]
+
+    ss_res = float(np.sum((yt - yp) ** 2))
+    ss_tot = float(np.sum((yt - np.mean(yt)) ** 2))
+    if ss_tot == 0.0:
+        return 0.0
+    return float(1.0 - ss_res / ss_tot)
+
+
+def get_ytrue_ypred_anytime_linear_gw(
+    max_lag: int,
+    test_season: str = "2022/23",
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return (y_true, y_pred) for the anytime linear GW model.
+    """
+    df = load_player_gameweeks()
+    df = _add_anytime_lags(df, max_lag=max_lag, rolling_window=max_lag)
+
+    feature_cols = [f"points_lag_{k}" for k in range(1, max_lag + 1)]
+    feature_cols.append(f"points_rolling_mean_{max_lag}")
+
+    train_df = df[df["season"] != test_season].copy()
+    test_df = df[df["season"] == test_season].copy()
+
+    X_train, y_train = _build_gw_features_and_target(train_df, feature_cols)
+    X_test, y_test = _build_gw_features_and_target(test_df, feature_cols)
+
+    reg = LinearRegression()
+    reg.fit(X_train.to_numpy(dtype=float), y_train.to_numpy(dtype=float))
+
+    y_pred = reg.predict(X_test.to_numpy(dtype=float))
+    return y_test.to_numpy(dtype=float), np.asarray(y_pred, dtype=float)
+
+
+def get_ytrue_ypred_seasonal_linear_gw(
+    test_season: str = "2022/23",
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return (y_true, y_pred) for the seasonal linear GW model.
+    """
+    df = load_player_gameweeks()
+    df = _add_seasonal_lags_with_prev5(df, max_lag=5)
+
+    feature_cols = [f"points_lag_{k}" for k in range(1, 4)]
+    feature_cols.append("points_lag_mean")
+
+    train_df = df[df["season"] != test_season].copy()
+    test_df = df[df["season"] == test_season].copy()
+
+    X_train, y_train = _build_gw_features_and_target(train_df, feature_cols)
+    X_test, y_test = _build_gw_features_and_target(test_df, feature_cols)
+
+    reg = LinearRegression()
+    reg.fit(X_train.to_numpy(dtype=float), y_train.to_numpy(dtype=float))
+
+    y_pred = reg.predict(X_test.to_numpy(dtype=float))
+    return y_test.to_numpy(dtype=float), np.asarray(y_pred, dtype=float)
+
+
+def get_ytrue_ypred_seasonal_gbm_gw(
+    test_season: str = "2022/23",
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return (y_true, y_pred) for the seasonal GBM GW model.
+    """
+    df = load_player_gameweeks()
+    df = _add_seasonal_lags_with_prev5(df, max_lag=5)
+
+    feature_cols = [f"points_lag_{k}" for k in range(1, 4)]
+    feature_cols.append("points_lag_mean")
+
+    train_df = df[df["season"] != test_season].copy()
+    train_df = train_df.dropna(subset=feature_cols + ["points"]).copy()
+
+    if train_df.empty:
+        raise ValueError(
+            f"No training data available for GW model when excluding season {test_season!r}."
+        )
+
+    X_train, y_train = _build_gw_features_and_target(train_df, feature_cols)
+    X_test, y_test = _build_gw_features_and_target(
+        df[df["season"] == test_season].dropna(subset=feature_cols), feature_cols
+    )
+
+    gbm = GradientBoostingRegressor(
+        random_state=42,
+        n_estimators=200,
+        learning_rate=0.05,
+        max_depth=3,
+    )
+    gbm.fit(X_train.to_numpy(dtype=float), y_train.to_numpy(dtype=float))
+
+    y_pred = gbm.predict(X_test.to_numpy(dtype=float))
+    return y_test.to_numpy(dtype=float), np.asarray(y_pred, dtype=float)
+
