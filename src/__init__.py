@@ -1,4 +1,5 @@
 from .data_loader import (
+    load_player_gameweeks,
     load_clean_odds,
     load_fixtures,
     load_raw_gameweeks,
@@ -9,6 +10,7 @@ from .data_loader import (
 )
 
 __all__ = [
+    "load_player_gameweeks",
     "load_clean_odds",
     "load_fixtures",
     "load_raw_gameweeks",
@@ -17,5 +19,7 @@ __all__ = [
     "TARGET_COLUMNS",
     "RENAME_MAP",
 ]
+
+
 
 

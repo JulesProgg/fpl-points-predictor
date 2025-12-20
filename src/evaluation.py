@@ -1,51 +1,47 @@
 from __future__ import annotations
 
+"""
+Evaluation module for the FPL Points Predictor.
+
+This module is STRICTLY EVALUATIVE.
+
+It contains:
+- Bookmaker-related benchmarks (Bet365-based team strength, match-by-match comparison)
+- Gameweek-level model evaluation utilities (MAE-based backtesting on a held-out season)
+- Simple baselines and legacy wrappers kept for compatibility
+
+"""
+
 from typing import Tuple
-from sklearn.linear_model import LinearRegression
-from pathlib import Path
+
 import numpy as np
 import pandas as pd
-import kagglehub
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.linear_model import LinearRegression
 
-from src.data_loader import  
+from src import load_player_gameweeks
+from src.data_loader import load_clean_odds, load_fixtures
 
-from src.data_loader import (
-    load_clean_odds,
-    load_fixtures,
-    ALLOWED_SEASONS,
-    GAMEWEEK_BASE_COLS,
-    OPTIONAL_COLS,
-    DATA_PROCESSED_DIR,
-    PLAYER_GW_FILE,
-    load_raw_gameweeks,
-    EPL_FIXTURES_FILE,
-    load_raw_fixtures_source,
-    DATA_RAW_DIR,
-    OUTPUT_PATH,
-    RENAME_MAP,
-    TARGET_COLUMNS,
-    RAW_ODDS_FILE,
-    OUT_ODDS_FILE,
-    EPL_CODE,
-    SEASON_RANGES,
-    load_raw_odds,
-)
-
+# NOTE:
+# The evaluation helpers below reuse the same lag logic as the predictive module.
+# We import the lag builders from src.models to avoid duplicating feature logic.
+from src.models import _add_anytime_lags, _add_seasonal_lags_with_prev5
 
 
 # ----------------------------------------------------------------------
-# TEAM STRENGTH (AGGREGATE, POUR SHOW_BOOKMAKERS) ((((BOOKMAKERBENCHMARK.py))))
+# BOOKMAKER BENCHMARKS (BET365-BASED)
 # ----------------------------------------------------------------------
+
+
 def compute_team_strength(odds_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Compute "Bet365 strength" per team across ALL seasons (2016-17 -> 2022-23).
+    Compute an aggregate "Bet365 strength" per team across ALL seasons.
 
     For each team, we use:
-    - average normalised home win probability when playing at home
-    - average normalised away win probability when playing away
+    - average normalized home-win probability when playing at home
+    - average normalized away-win probability when playing away
 
-    Then we compute a single aggregated strength per team by weighting
-    home and away averages by the number of matches.
+    A single strength score is then computed as a match-count-weighted average.
     """
     df = odds_df.copy()
 
@@ -92,25 +88,31 @@ def compute_team_strength(odds_df: pd.DataFrame) -> pd.DataFrame:
 
 def build_team_strength_table() -> pd.DataFrame:
     """
-    Main entry point used by the CLI:
-    - Load the multi-season odds dataset
-    - Compute per-team Bet365 strength across all 7 seasons
+    CLI-friendly entry point:
+    - Load the multi-season cleaned odds dataset
+    - Compute per-team Bet365 strength across all seasons in scope
     """
     odds = load_clean_odds()
     strength = compute_team_strength(odds)
     return strength
 
 
-# ----------------------------------------------------------------------
-# MATCH-BY-MATCH COMPARISON: MODEL vs BOOKMAKER
-# ----------------------------------------------------------------------
 def compare_model_vs_bookmakers(
     model: str,
     test_season: str,
 ) -> Tuple[pd.DataFrame, float, float]:
     """
-    Match-level comparison between the model's implied home-win probability
-    and Bet365 home-win probability, for a given TEST season.
+    Match-level comparison: model-implied home-win probability vs Bet365 probability.
+
+    Method overview
+    ---------------
+    1) Predict all player-gameweeks for the season (via src.models.predict_gw_all_players)
+    2) Approximate probability of playing using recent minutes lags (if available)
+    3) Build team-level strengths by summing predicted points for the top 11 players
+    4) Calibrate team-strength-to-probability mapping:
+       - gamma amplification (grid search)
+       - logistic calibration via linear regression in logit space
+    5) Return a comparison table + summary metrics (MAE and correlation)
     """
     odds = load_clean_odds()
     fixtures = load_fixtures()
@@ -142,7 +144,7 @@ def compare_model_vs_bookmakers(
     preds_all = predict_gw_all_players(
         model=model,
         test_season=test_season,
-        gameweek=None,   # compute predictions for ALL gameweeks
+        gameweek=None,
     )
 
     if preds_all.empty:
@@ -151,21 +153,23 @@ def compare_model_vs_bookmakers(
         )
 
     # ------------------------------------------------------
-    # 2) Approximate the probability of playing based on recent minutes
+    # 2) Approximate the probability of playing using recent minutes
     # ------------------------------------------------------
     minute_cols = [c for c in preds_all.columns if c.startswith("minutes_lag_")]
 
     if minute_cols:
         preds_all["recent_minutes_mean"] = preds_all[minute_cols].mean(axis=1)
-        preds_all["playing_weight"] = (preds_all["recent_minutes_mean"] / 90.0).clip(0.0, 1.0)
+        preds_all["playing_weight"] = (
+            (preds_all["recent_minutes_mean"] / 90.0).clip(0.0, 1.0)
+        )
     else:
         preds_all["playing_weight"] = 1.0
 
     preds_all["weighted_points"] = preds_all["predicted_points"] * preds_all["playing_weight"]
 
+    # Keep top-11 predicted contributors per team/gameweek
     preds_all = (
-        preds_all
-        .sort_values(
+        preds_all.sort_values(
             ["season", "gameweek", "team", "weighted_points"],
             ascending=[True, True, True, False],
         )
@@ -188,7 +192,9 @@ def compare_model_vs_bookmakers(
     # 4) Merge home team predicted strength
     # ------------------------------------------------------
     comp = matches.merge(
-        team_strength.rename(columns={"team": "home_team", "predicted_team_points": "pred_home_points"}),
+        team_strength.rename(
+            columns={"team": "home_team", "predicted_team_points": "pred_home_points"}
+        ),
         on=["season", "gameweek", "home_team"],
         how="left",
     )
@@ -197,13 +203,15 @@ def compare_model_vs_bookmakers(
     # 5) Merge away team predicted strength
     # ------------------------------------------------------
     comp = comp.merge(
-        team_strength.rename(columns={"team": "away_team", "predicted_team_points": "pred_away_points"}),
+        team_strength.rename(
+            columns={"team": "away_team", "predicted_team_points": "pred_away_points"}
+        ),
         on=["season", "gameweek", "away_team"],
         how="left",
     )
 
     # ------------------------------------------------------
-    # 6) Build comparison table and clean invalid rows
+    # 6) Clean invalid rows
     # ------------------------------------------------------
     comp = comp.replace([np.inf, -np.inf], np.nan)
     comp = comp.dropna(subset=["pred_home_points", "pred_away_points", "pnorm_home_win"])
@@ -257,7 +265,7 @@ def compare_model_vs_bookmakers(
     comp["p_model_home_win"] = 1.0 / (1.0 + np.exp(-logit_pred))
 
     # ------------------------------------------------------
-    # 9) Final error metrics
+    # 9) Final summary metrics
     # ------------------------------------------------------
     comp["abs_error"] = (comp["p_model_home_win"] - comp["pnorm_home_win"]).abs()
     mae = float(comp["abs_error"].mean())
@@ -273,14 +281,16 @@ def compare_model_vs_bookmakers(
         "abs_error",
     ]
 
-    comp = comp[cols_to_keep].sort_values(["gameweek", "home_team", "away_team"]).reset_index(drop=True)
+    comp = comp[cols_to_keep].sort_values(
+        ["gameweek", "home_team", "away_team"]
+    ).reset_index(drop=True)
 
     return comp, mae, corr
 
 
 def print_example_matches(comp: pd.DataFrame, n: int = 10) -> None:
     """
-    Displays a few sample matches, sorted by the largest absolute discrepancy
+    Print a few sample matches, sorted by largest absolute discrepancy
     between the model and Bet365.
     """
     if comp.empty:
@@ -307,276 +317,254 @@ def print_example_matches(comp: pd.DataFrame, n: int = 10) -> None:
         print()
 
 
-
-
-
 # ---------------------------------------------------------------------
-# ((((DATAPIPELINE.py))))
+# GAMEWEEK-LEVEL MODEL EVALUATION (MOVED FROM models.py)
 # ---------------------------------------------------------------------
-def filter_allowed_seasons(df: pd.DataFrame) -> pd.DataFrame:
-    """Keep only seasons in ALLOWED_SEASONS."""
-    if "season" not in df.columns:
-        raise ValueError("Column 'season' is missing from dataframe.")
-    return df[df["season"].isin(ALLOWED_SEASONS)].copy()
+# The following functions are used to measure predictive performance on a held-out season.
+# They do NOT belong in src.models because src.models is strictly predictive.
 
 
-def clean_gameweeks(df: pd.DataFrame) -> pd.DataFrame:
+def _compute_mae(y_true, y_pred) -> float:
     """
-    Clean and standardise the gameweek-level dataset:
-    - Keep required + optional columns
-    - Filter seasons (2016/17 → 2022/23)
-    - Rename total_points → points
-    - Rename opponent → opponent_team (if present)
-    - Create player_id
-    - Sort by (player_id, season, gameweek)
+    Compute Mean Absolute Error (MAE), ignoring any pair where either value is NaN.
     """
-    available_optional = [c for c in OPTIONAL_COLS if c in df.columns]
-    cols_to_keep = GAMEWEEK_BASE_COLS + available_optional
-    df = df[cols_to_keep].copy()
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
 
-    df = filter_allowed_seasons(df)
+    mask = ~np.isnan(y_true) & ~np.isnan(y_pred)
+    if not np.any(mask):
+        raise ValueError("No valid (y_true, y_pred) pairs to compute MAE (all NaN).")
 
-    df = df.rename(columns={"total_points": "points"})
+    return float(np.mean(np.abs(y_true[mask] - y_pred[mask])))
 
-    if "opponent" in df.columns:
-        df = df.rename(columns={"opponent": "opponent_team"})
 
-    if "player_id" not in df.columns:
-        df["player_id"] = df["id"]
+def _build_gw_features_and_target(
+    df: pd.DataFrame,
+    feature_cols: list[str],
+    target_col: str = "points",
+) -> tuple[pd.DataFrame, pd.Series]:
+    """
+    Utility used by evaluation functions:
+    - drop rows with missing required features/target
+    - sanitize inf/NaN
+    - return (X, y)
+    """
+    cols_needed = feature_cols + [target_col]
+    clean_df = df.dropna(subset=cols_needed).copy()
 
-    try:
-        df["gameweek"] = df["gameweek"].astype(int)
-    except Exception:
-        pass
+    X = (
+        clean_df[feature_cols]
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(0.0)
+    )
+    y = clean_df[target_col].astype(float)
 
-    df = (
-        df.sort_values(["player_id", "season", "gameweek"])
-        .reset_index(drop=True)
+    return X, y
+
+
+# Columns that are NOT features (identifiers / metadata / target)
+NON_FEATURE_COLS_GW: set[str] = {
+    "id",
+    "player_id",
+    "name",
+    "team",
+    "position",
+    "season",
+    "gameweek",
+    "points",
+}
+
+
+def _evaluate_anytime_linear_gw(
+    max_lag: int,
+    test_season: str = "2022/23",
+) -> float:
+    """
+    Evaluate a linear regression GW model using "anytime" lags.
+    """
+    df = load_player_gameweeks()
+    df = _add_anytime_lags(df, max_lag=max_lag, rolling_window=max_lag)
+
+    feature_cols = [f"points_lag_{k}" for k in range(1, max_lag + 1)]
+    feature_cols.append(f"points_rolling_mean_{max_lag}")
+
+    train_df = df[df["season"] != test_season].copy()
+    test_df = df[df["season"] == test_season].copy()
+
+    X_train, y_train = _build_gw_features_and_target(train_df, feature_cols)
+    X_test, y_test = _build_gw_features_and_target(test_df, feature_cols)
+
+    reg = LinearRegression()
+    reg.fit(X_train.to_numpy(dtype=float), y_train.to_numpy(dtype=float))
+
+    y_pred = reg.predict(X_test.to_numpy(dtype=float))
+    mae = _compute_mae(y_test, y_pred)
+    return float(mae)
+
+
+def evaluate_linear_gw_model_lag3(test_season: str = "2022/23") -> float:
+    """Anytime linear GW model using the last 3 player appearances as features."""
+    return _evaluate_anytime_linear_gw(max_lag=3, test_season=test_season)
+
+
+def evaluate_linear_gw_model_lag5(test_season: str = "2022/23") -> float:
+    """Anytime linear GW model using the last 5 player appearances as features."""
+    return _evaluate_anytime_linear_gw(max_lag=5, test_season=test_season)
+
+
+def evaluate_linear_gw_model_lag10(test_season: str = "2022/23") -> float:
+    """Anytime linear GW model using the last 10 player appearances as features."""
+    return _evaluate_anytime_linear_gw(max_lag=10, test_season=test_season)
+
+
+def evaluate_linear_gw_model_seasonal(test_season: str = "2022/23") -> float:
+    """
+    Seasonal linear GW model evaluation using seasonal lags + fallback.
+    """
+    df = load_player_gameweeks()
+    df = _add_seasonal_lags_with_prev5(df, max_lag=5)
+
+    feature_cols = [f"points_lag_{k}" for k in range(1, 4)]
+    feature_cols.append("points_lag_mean")
+
+    train_df = df[df["season"] != test_season].copy()
+    test_df = df[df["season"] == test_season].copy()
+
+    X_train, y_train = _build_gw_features_and_target(train_df, feature_cols)
+    X_test, y_test = _build_gw_features_and_target(test_df, feature_cols)
+
+    reg = LinearRegression()
+    reg.fit(X_train.to_numpy(dtype=float), y_train.to_numpy(dtype=float))
+
+    y_pred = reg.predict(X_test.to_numpy(dtype=float))
+    mae = _compute_mae(y_test, y_pred)
+    return float(mae)
+
+
+def evaluate_gbm_gw_model_seasonal(test_season: str = "2022/23") -> float:
+    """
+    Seasonal GradientBoostingRegressor GW model evaluation using seasonal lags + fallback.
+    """
+    df = load_player_gameweeks()
+    df = _add_seasonal_lags_with_prev5(df, max_lag=5)
+
+    feature_cols = [f"points_lag_{k}" for k in range(1, 4)]
+    feature_cols.append("points_lag_mean")
+
+    train_df = df[df["season"] != test_season].copy()
+    train_df = train_df.dropna(subset=feature_cols + ["points"]).copy()
+
+    if train_df.empty:
+        raise ValueError(
+            f"No training data available for GW model when excluding season {test_season!r}."
+        )
+
+    X_train, y_train = _build_gw_features_and_target(train_df, feature_cols)
+    X_test, y_test = _build_gw_features_and_target(
+        df[df["season"] == test_season].dropna(subset=feature_cols), feature_cols
     )
 
-    cols = ["player_id"] + [c for c in df.columns if c != "player_id"]
-    df = df[cols]
-
-    return df
-
-
-# ---------------------------------------------------------------------
-# PIPELINE
-# ---------------------------------------------------------------------
-def build_player_gameweeks(raw_path: Path | str | None = None) -> Path:
-    """
-    Build the clean per-player-per-gameweek dataset:
-    - Load raw Kaggle CSV
-    - Clean & filter seasons
-    - Save to data/processed/player_gameweeks.csv
-    """
-    DATA_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-
-    df_raw = load_raw_gameweeks(raw_path) if raw_path else load_raw_gameweeks()
-    df_clean = clean_gameweeks(df_raw)
-
-    df_clean.to_csv(PLAYER_GW_FILE, index=False)
-    return PLAYER_GW_FILE
-
-
-# ---------------------------------------------------------------------
-# ((((FIXTUREPIPELINE.py))))
-# ---------------------------------------------------------------------    
-
-
-def build_fixtures(raw_path: Path | str | None = None) -> Path:
-    """
-    Build a clean fixtures file for EPL seasons 2016/17 → 2022/23.
-
-    Logic:
-    - Load the raw player-gameweeks dataset (fixtures-relevant columns only).
-    - Filter to ALLOWED_SEASONS.
-    - Keep only rows where the player's team is playing at HOME.
-    - Drop duplicates (one row per match).
-    - Save to data/processed/epl_fixtures_2016_23.csv
-      with columns: season, gameweek, home_team, away_team
-    """
-    df = load_raw_fixtures_source(raw_path) if raw_path else load_raw_fixtures_source()
-
-    # Filter seasons
-    df = df[df["season"].isin(ALLOWED_SEASONS)].copy()
-
-    # Ensure gameweek is int
-    try:
-        df["gameweek"] = df["gameweek"].astype(int)
-    except Exception:
-        pass
-
-    # Normalise was_home to boolean
-    df["was_home"] = df["was_home"].astype(str).str.lower().isin(["true", "1", "yes"])
-
-    # Keep only home matches
-    df_home = df[df["was_home"]].copy()
-
-    # Build fixtures: one row per (season, GW, home_team, away_team)
-    fixtures = (
-        df_home[["season", "gameweek", "team", "opponent"]]
-        .drop_duplicates()
-        .rename(columns={"team": "home_team", "opponent": "away_team"})
-        .sort_values(["season", "gameweek", "home_team", "away_team"])
-        .reset_index(drop=True)
+    gbm = GradientBoostingRegressor(
+        random_state=42,
+        n_estimators=200,
+        learning_rate=0.05,
+        max_depth=3,
     )
+    gbm.fit(X_train.to_numpy(dtype=float), y_train.to_numpy(dtype=float))
 
-    DATA_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-    fixtures.to_csv(EPL_FIXTURES_FILE, index=False)
+    y_pred = gbm.predict(X_test.to_numpy(dtype=float))
+    mae = _compute_mae(y_test, y_pred)
+    return float(mae)
 
-    return EPL_FIXTURES_FILE
 
+def evaluate_gw_baseline_lag1(test_season: str = "2022/23") -> float:
+    """
+    Naive persistence baseline for GW points:
+        y_hat_t = points_lag_1
+    """
+    df = load_player_gameweeks()
+    df = _add_anytime_lags(df, max_lag=1, rolling_window=None)
 
+    feature_col = "points_lag_1"
+
+    test_df = df[df["season"] == test_season].dropna(subset=["points", feature_col]).copy()
+
+    y_true = test_df["points"].astype(float).to_numpy()
+    y_pred = test_df[feature_col].astype(float).to_numpy()
+
+    mae = _compute_mae(y_true, y_pred)
+    return float(mae)
 
 
 # ---------------------------------------------------------------------
-# ((((FPLKAGGLEIMPORT))))
-# ---------------------------------------------------------------------    
+# WITHIN-SEASON (STRICT) LINEAR MODEL EVALUATION (ALTERNATIVE)
+# ---------------------------------------------------------------------
 
 
-
-def build_player_gameweeks_raw_from_kaggle() -> Path:
+def prepare_gw_lag_dataset(
+    df: pd.DataFrame,
+    test_season: str = "2022/23",
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Download the Kaggle dataset:
-        'reevebarreto/fantasy-premier-league-player-data-2016-2024'
-    and convert:
-        'FPL Player Stats(2016-2024).csv'
-    into:
-        data/raw/player_gameweeks_raw.csv
-
-    Note:
-    - expected_* columns do not exist in this dataset → created as NaN.
-    - starts is approximated as (minutes >= 60).
+    Prepare a within-season lag dataset (no cross-season lags).
     """
-    kaggle_path_str = kagglehub.dataset_download(
-        "reevebarreto/fantasy-premier-league-player-data-2016-2024"
-    )
-    kaggle_root = Path(kaggle_path_str)
-    print(f"Kaggle dataset downloaded to: {kaggle_root}")
+    df = df.sort_values(["player_id", "season", "gameweek"]).copy()
 
-    csv_path = kaggle_root / "FPL Player Stats(2016-2024).csv"
-    if not csv_path.exists():
-        raise FileNotFoundError(f"Expected CSV not found: {csv_path}")
+    group_cols = ["player_id", "season"]
 
-    df = pd.read_csv(csv_path)
+    df["points_lag_1"] = df.groupby(group_cols)["points"].shift(1)
+    df["points_lag_2"] = df.groupby(group_cols)["points"].shift(2)
+    df["points_lag_3"] = df.groupby(group_cols)["points"].shift(3)
 
-    # Rename columns to standard names
-    rename_map = {k: v for k, v in RENAME_MAP.items() if k in df.columns}
-    df = df.rename(columns=rename_map)
+    prev_points = df.groupby(group_cols)["points"].shift(1)
+    df["points_rolling_mean_3"] = prev_points.rolling(3).mean()
 
-    # Remove duplicated columns (e.g., two 'gameweek')
-    df = df.loc[:, ~df.columns.duplicated()]
+    train_df = df[df["season"] != test_season].copy()
+    test_df = df[df["season"] == test_season].copy()
 
-    # Create starts if missing: starts=1 if minutes >= 60
-    if "starts" not in df.columns:
-        if "minutes" in df.columns:
-            df["starts"] = (df["minutes"] >= 60).astype(int)
-        else:
-            df["starts"] = pd.NA
+    return train_df, test_df
 
-    # Create expected_* columns if absent
-    for col in [
-        "expected_goals",
-        "expected_assists",
-        "expected_goal_involvements",
-        "expected_goals_conceded",
-    ]:
-        if col not in df.columns:
-            df[col] = pd.NA
 
-    # Ensure all target columns exist
-    for col in TARGET_COLUMNS:
-        if col not in df.columns:
-            df[col] = pd.NA
+def evaluate_linear_gw_model(test_season: str = "2022/23") -> float:
+    """
+    Evaluate a within-season linear GW model (3 lags + rolling mean).
+    """
+    df = load_player_gameweeks()
+    train_df, test_df = prepare_gw_lag_dataset(df, test_season=test_season)
 
-    # Keep only target columns in target order
-    df = df[TARGET_COLUMNS].copy()
+    if train_df.empty or test_df.empty:
+        raise ValueError(
+            "Train or test set is empty in evaluate_linear_gw_model "
+            f"(check that season {test_season!r} has enough data)."
+        )
 
-    # Save to data/raw/player_gameweeks_raw.csv
-    DATA_RAW_DIR.mkdir(parents=True, exist_ok=True)
-    df.to_csv(OUTPUT_PATH, index=False)
+    feature_cols = ["points_lag_1", "points_lag_2", "points_lag_3", "points_rolling_mean_3"]
 
-    print(f"Saved combined GW dataset to: {OUTPUT_PATH}")
-    return OUTPUT_PATH
+    X_train, y_train = _build_gw_features_and_target(train_df, feature_cols, target_col="points")
+    X_test, y_test = _build_gw_features_and_target(test_df, feature_cols, target_col="points")
+
+    reg = LinearRegression()
+    reg.fit(X_train.to_numpy(dtype=float), y_train.to_numpy(dtype=float))
+
+    y_pred = reg.predict(X_test.to_numpy(dtype=float))
+    mae = _compute_mae(y_test, y_pred)
+    return float(mae)
 
 
 # ---------------------------------------------------------------------
-# ((((ODDSPIPELINE.py))))
-# --------------------------------------------------------------------- 
+# LEGACY WRAPPERS (BACKWARD COMPATIBILITY)
+# ---------------------------------------------------------------------
 
-def assign_season_column(df: pd.DataFrame) -> pd.DataFrame:
+
+def evaluate_linear_model(test_season: str = "2022/23") -> float:
     """
-    Add a 'season' column to the odds dataframe based on MatchDate.
-
-    Season labels match the FPL format:
-    "2016/17", ..., "2022/23".
-    Rows outside these date ranges are dropped.
+    Legacy alias kept for backward compatibility.
     """
-    df = df.copy()
-
-    if not pd.api.types.is_datetime64_any_dtype(df["MatchDate"]):
-        df["MatchDate"] = pd.to_datetime(df["MatchDate"])
-
-    df["season"] = pd.NA
-
-    for start, end, season_label in SEASON_RANGES:
-        mask = df["MatchDate"].between(start, end)
-        df.loc[mask, "season"] = season_label
-
-    return df[df["season"].notna()].copy()
+    return evaluate_linear_gw_model(test_season=test_season)
 
 
-def run_odds_pipeline(raw_path: Path | str = RAW_ODDS_FILE) -> Path:
+def evaluate_gradient_boosting_model(test_season: str = "2022/23") -> float:
     """
-    Run the full odds pipeline and save to data/processed/bet365odds_epl_2016_23.csv.
+    Legacy alias kept for backward compatibility.
     """
-    odds = load_raw_odds(raw_path)
-
-    # Date conversion
-    odds["MatchDate"] = pd.to_datetime(odds["MatchDate"])
-
-    # EPL only
-    odds = odds[odds["Division"] == EPL_CODE].copy()
-
-    # Assign seasons and drop out-of-scope matches
-    odds = assign_season_column(odds)
-
-    # Rename columns
-    odds = odds.rename(
-        columns={
-            "MatchDate": "match_date",
-            "HomeTeam": "home_team",
-            "AwayTeam": "away_team",
-            "OddHome": "home_win_odds",
-            "OddDraw": "draw_odds",
-            "OddAway": "away_win_odds",
-        }
-    )
-
-    # Team name normalisation
-    team_fix = {
-        "Nott'm Forest": "Nottingham Forest",
-        "Nottm Forest": "Nottingham Forest",
-    }
-    odds["home_team"] = odds["home_team"].replace(team_fix)
-    odds["away_team"] = odds["away_team"].replace(team_fix)
-
-    # Implied probabilities
-    odds["p_home_implied"] = 1.0 / odds["home_win_odds"]
-    odds["p_draw_implied"] = 1.0 / odds["draw_odds"]
-    odds["p_away_implied"] = 1.0 / odds["away_win_odds"]
-
-    total = odds["p_home_implied"] + odds["p_draw_implied"] + odds["p_away_implied"]
-
-    # Normalised probabilities
-    odds["pnorm_home_win"] = odds["p_home_implied"] / total
-    odds["pnorm_draw"] = odds["p_draw_implied"] / total
-    odds["pnorm_away_win"] = odds["p_away_implied"] / total
-
-    # Save
-    DATA_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-    odds.to_csv(OUT_ODDS_FILE, index=False)
-
-    return OUT_ODDS_FILE
-
+    return evaluate_gbm_gw_model_seasonal(test_season=test_season)
