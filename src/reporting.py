@@ -15,6 +15,7 @@ from src.evaluation import (
     get_ytrue_ypred_anytime_linear_gw,
     get_ytrue_ypred_seasonal_linear_gw,
     get_ytrue_ypred_seasonal_gbm_gw,
+    get_test_predictions_seasonal_gbm_gw
 )
 
 
@@ -190,3 +191,91 @@ def export_gw_results(
     _save_fig(fig_spear, figures_dir / "summary_spearman_by_model.png")
 
     return df
+
+
+def export_gbm_results_by_position(
+    test_season: str = "2022/23",
+    output_dir: str | Path = "results",
+) -> pd.DataFrame:
+    """
+    Export GBM seasonal evaluation broken down by position.
+    Writes:
+      - results/metrics/gbm_seasonal_metrics_by_position.csv
+      - results/figures/gw/gbm_seasonal_mae_by_position.png
+      - results/figures/gw/gbm_seasonal_spearman_by_position.png
+    """
+    output_dir = Path(output_dir)
+    metrics_dir = output_dir / "metrics"
+    figures_dir = output_dir / "figures" / "gw"
+    _ensure_dir(metrics_dir)
+    _ensure_dir(figures_dir)
+
+    df = get_test_predictions_seasonal_gbm_gw(test_season=test_season)
+
+    # Compute per-position metrics
+    rows = []
+    for pos, g in df.groupby("position"):
+        y_true = g["points"].to_numpy(dtype=float)
+        y_pred = g["predicted_points"].to_numpy(dtype=float)
+
+        rows.append(
+            {
+                "model_key": "gbm_seasonal",
+                "test_season": test_season,
+                "position": pos,
+                "n_obs": int(len(g)),
+                "mae": _compute_mae(y_true, y_pred),
+                "rmse": _compute_rmse(y_true, y_pred),
+                "r2": _compute_r2(y_true, y_pred),
+                "spearman": _compute_spearman(y_true, y_pred),
+            }
+        )
+
+    out = pd.DataFrame(rows).sort_values("mae", ascending=True).reset_index(drop=True)
+
+    for col, nd in {"mae": 3, "rmse": 3, "r2": 3, "spearman": 3}.items():
+        if col in out.columns:
+            out[col] = out[col].round(nd)
+
+    out_path = metrics_dir / "gbm_seasonal_metrics_by_position.csv"
+    out.to_csv(out_path, index=False)
+
+    # Figures: MAE by position
+    fig_mae = plt.figure()
+    ax = plt.gca()
+    ax.bar(out["position"], out["mae"])
+    ax.set_xlabel("Position")
+    ax.set_ylabel("MAE")
+    ax.set_title(f"GBM seasonal – MAE by position ({test_season})")
+    _save_fig(fig_mae, figures_dir / "gbm_seasonal_mae_by_position.png")
+
+    # Figures: Spearman by position
+    fig_sp = plt.figure()
+    ax = plt.gca()
+    ax.bar(out["position"], out["spearman"])
+    ax.set_xlabel("Position")
+    ax.set_ylabel("Spearman")
+    ax.set_title(f"GBM seasonal – Spearman by position ({test_season})")
+    _save_fig(fig_sp, figures_dir / "gbm_seasonal_spearman_by_position.png")
+
+    return out
+
+
+def export_gbm_error_tables(
+    test_season: str = "2022/23",
+    output_dir: str | Path = "results",
+    n: int = 15,
+) -> None:
+    output_dir = Path(output_dir)
+    tables_dir = output_dir / "tables"
+    _ensure_dir(tables_dir)
+
+    df = get_test_predictions_seasonal_gbm_gw(test_season=test_season).copy()
+
+    cols = ["season", "gameweek", "player_id", "name", "team", "position", "points", "predicted_points", "error", "abs_error"]
+
+    over = df.sort_values("error", ascending=False).head(n)[cols]
+    under = df.sort_values("error", ascending=True).head(n)[cols]
+
+    over.to_csv(tables_dir / "gbm_seasonal_top_overpredicted.csv", index=False)
+    under.to_csv(tables_dir / "gbm_seasonal_top_underpredicted.csv", index=False)

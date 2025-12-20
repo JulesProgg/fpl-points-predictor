@@ -713,3 +713,63 @@ def get_ytrue_ypred_seasonal_gbm_gw(
     y_pred = gbm.predict(X_test.to_numpy(dtype=float))
     return y_test.to_numpy(dtype=float), np.asarray(y_pred, dtype=float)
 
+
+def get_test_predictions_seasonal_gbm_gw(
+    test_season: str = "2022/23",
+) -> pd.DataFrame:
+    """
+    Return a test-set dataframe with metadata + actual points + predicted points
+    for the seasonal GBM GW model.
+    """
+    df = load_player_gameweeks()
+    df = _add_seasonal_lags_with_prev5(df, max_lag=5)
+
+    feature_cols = [f"points_lag_{k}" for k in range(1, 4)]
+    feature_cols.append("points_lag_mean")
+
+    # Train on all other seasons
+    train_df = df[df["season"] != test_season].copy()
+    train_df = train_df.dropna(subset=feature_cols + ["points"]).copy()
+
+    if train_df.empty:
+        raise ValueError(
+            f"No training data available for GW model when excluding season {test_season!r}."
+        )
+
+    # Test season
+    test_df = df[df["season"] == test_season].copy()
+    test_df = test_df.dropna(subset=feature_cols + ["points"]).copy()
+    if test_df.empty:
+        raise ValueError(f"No test data available for season {test_season!r}.")
+
+    X_train = (
+        train_df[feature_cols]
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(0.0)
+    )
+    y_train = train_df["points"].astype(float)
+
+    X_test = (
+        test_df[feature_cols]
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(0.0)
+    )
+
+    gbm = GradientBoostingRegressor(
+        random_state=42,
+        n_estimators=200,
+        learning_rate=0.05,
+        max_depth=3,
+    )
+    gbm.fit(X_train.to_numpy(dtype=float), y_train.to_numpy(dtype=float))
+
+    y_pred = gbm.predict(X_test.to_numpy(dtype=float))
+
+    out = test_df[
+        ["player_id", "name", "team", "position", "season", "gameweek", "points"]
+    ].copy()
+    out["predicted_points"] = np.asarray(y_pred, dtype=float)
+    out["error"] = out["predicted_points"] - out["points"]
+    out["abs_error"] = out["error"].abs()
+
+    return out.reset_index(drop=True)
