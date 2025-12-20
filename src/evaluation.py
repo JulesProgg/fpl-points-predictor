@@ -318,7 +318,7 @@ def print_example_matches(comp: pd.DataFrame, n: int = 10) -> None:
 
 
 # ---------------------------------------------------------------------
-# GAMEWEEK-LEVEL MODEL EVALUATION (MOVED FROM models.py)
+# GAMEWEEK-LEVEL MODEL EVALUATION 
 # ---------------------------------------------------------------------
 # The following functions are used to measure predictive performance on a held-out season.
 # They do NOT belong in src.models because src.models is strictly predictive.
