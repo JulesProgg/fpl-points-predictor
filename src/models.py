@@ -262,15 +262,27 @@ def predict_gw_all_players(
             .fillna(0.0)
             .to_numpy(dtype=float)
         )
-        y_train = train_df["points"].astype(float).to_numpy()
+
+        # -----------------------------
+        # BIG-IMPACT CHANGES (simple)
+        # 1) log-transform target to reduce skew and "mean regression"
+        # 2) squared_error to emphasize large errors (haul games)
+        # 3) sample_weight to upweight high-point outcomes
+        # -----------------------------
+        y_points = train_df["points"].astype(float).to_numpy()
+        y_train = np.log1p(y_points)
+
+        sample_weight = 1.0 + 0.15 * y_points  # simple, stable weighting
 
         reg = GradientBoostingRegressor(
             random_state=42,
-            n_estimators=200,
+            n_estimators=400,        # a bit more capacity (still fast)
             learning_rate=0.05,
             max_depth=3,
+            loss="squared_error",    # RMSE-oriented
         )
-        reg.fit(X_train, y_train)
+        reg.fit(X_train, y_train, sample_weight=sample_weight)
+
 
     else:
         raise ValueError(f"Unknown GW model: {model!r}")
@@ -295,7 +307,15 @@ def predict_gw_all_players(
         .to_numpy(dtype=float)
     )
 
-    test_df["predicted_points"] = reg.predict(X_test)
+    y_pred = reg.predict(X_test)
+
+    # If GBM: model was trained on log1p(points) -> invert transform
+    if model == "gw_seasonal_gbm":
+        y_pred = np.expm1(y_pred)
+        y_pred = np.clip(y_pred, 0.0, 25.0)  # keep predictions in a plausible range
+
+    test_df["predicted_points"] = y_pred
+
 
     minute_cols = [c for c in test_df.columns if c.startswith("minutes_lag_")]
 

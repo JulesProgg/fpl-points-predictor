@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -16,6 +17,7 @@ from src.data_loader import (
     build_player_gameweeks_raw_from_kaggle,
 )
 from src.models import predict_gw_all_players
+
 from src.evaluation import (
     build_team_strength_table,
     compare_model_vs_bookmakers,
@@ -27,6 +29,9 @@ from src.evaluation import (
     evaluate_gbm_gw_model_seasonal,
     evaluate_gw_baseline_lag1,
 )
+
+from src.reporting import export_gw_results
+
 
 app = typer.Typer(add_completion=False, help="FPL Points Predictor – Single entry point")
 
@@ -247,6 +252,43 @@ def list_info(
 
     typer.echo("ERROR: unknown list target. Use: seasons or models")
     raise typer.Exit(code=1)
+
+
+from pathlib import Path
+
+# (tu as déjà ajouté ces imports)
+# from src.reporting import (
+#     export_gw_results,
+#     export_gbm_results_by_position,
+#     export_gbm_error_tables,
+# )
+
+@app.command("export-gw-results")
+def export_gw_results_cmd(
+    season: str = typer.Option("2022/23", "--season", help='Held-out season for evaluation, e.g. "2022/23".'),
+    output_dir: str = typer.Option("results", "--output-dir", help="Output directory for metrics/figures/tables."),
+    with_position_breakdown: bool = typer.Option(
+        True, "--with-position-breakdown/--no-position-breakdown", help="Also export GBM metrics/figures by position."
+    ),
+    with_error_tables: bool = typer.Option(
+        True, "--with-error-tables/--no-error-tables", help="Also export top over/under-predicted tables for GBM."
+    ),
+) -> None:
+    """
+    Export evaluation metrics + figures to the results/ folder (pred vs actual, residuals, summary bars, etc.).
+    """
+    test_season = _norm_season_or_exit(season)
+    out_dir = Path(output_dir)
+
+    try:
+        export_gw_results(test_season=test_season, output_dir=out_dir)
+    except Exception as e:
+        typer.echo(f"ERROR: export failed: {e}")
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Exported metrics/figures to: {out_dir.resolve()}")
+
+
 
 
 if __name__ == "__main__":

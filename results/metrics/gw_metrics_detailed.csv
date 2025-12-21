@@ -1,5 +1,5 @@
-model_key,test_season,n_obs,mae,rmse,r2,spearman
-gbm_seasonal,2022/23,26391,1.122,2.025,0.263,0.693
-linear_seasonal,2022/23,26391,1.217,2.083,0.22,0.666
-linear_anytime_lag5,2022/23,26327,1.219,2.086,0.22,0.666
-linear_anytime_lag3,2022/23,26391,1.248,2.105,0.204,0.67
+model_key,test_season,n_obs,mae,rmse,r2,spearman,bias,medae,p90_ae,rank_mae,rank_rmse,rank_r2,rank_spearman
+gbm_seasonal,2022/23,26391,1.122,2.025,0.263,0.693,0.036,0.462,2.772,1,1,1,1
+linear_seasonal,2022/23,26391,1.217,2.083,0.22,0.666,0.045,0.46,2.918,2,2,2,3
+linear_anytime_lag5,2022/23,26327,1.219,2.086,0.22,0.666,0.045,0.46,2.923,3,3,3,4
+linear_anytime_lag3,2022/23,26391,1.248,2.105,0.204,0.67,0.057,0.566,2.938,4,4,4,2

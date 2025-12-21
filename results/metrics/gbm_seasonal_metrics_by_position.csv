@@ -1,5 +1,0 @@
-model_key,test_season,position,n_obs,mae,rmse,r2,spearman
-gbm_seasonal,2022/23,GK,2763,0.867,1.774,0.386,0.778
-gbm_seasonal,2022/23,MID,11458,1.06,1.966,0.292,0.734
-gbm_seasonal,2022/23,DEF,9105,1.202,2.027,0.192,0.595
-gbm_seasonal,2022/23,FWD,3065,1.343,2.413,0.237,0.692
