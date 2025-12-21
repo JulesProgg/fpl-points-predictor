@@ -397,7 +397,7 @@ def load_player_gameweeks(path: Path | str = PLAYER_GW_FILE) -> pd.DataFrame:
 
 
 # =============================================================================
-# PIPELINE UTILITIES (formerly separate modules)
+# PIPELINE UTILITIES 
 # =============================================================================
 # The following functions are "data preparation" steps that produce datasets
 # stored under data/processed/. They rely on the loaders above.
@@ -405,7 +405,7 @@ def load_player_gameweeks(path: Path | str = PLAYER_GW_FILE) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------
-# GAMEWEEKS CLEANING (formerly DATAPIPELINE.py)
+# GAMEWEEKS CLEANING 
 # ---------------------------------------------------------------------
 def filter_allowed_seasons(df: pd.DataFrame) -> pd.DataFrame:
     """Keep only seasons in ALLOWED_SEASONS."""
@@ -471,7 +471,7 @@ def build_player_gameweeks(raw_path: Path | str | None = None) -> Path:
 
 
 # ---------------------------------------------------------------------
-# FIXTURES BUILDING (formerly FIXTUREPIPELINE.py)
+# FIXTURES BUILDING 
 # ---------------------------------------------------------------------
 def build_fixtures(raw_path: Path | str | None = None) -> Path:
     """
@@ -518,7 +518,7 @@ def build_fixtures(raw_path: Path | str | None = None) -> Path:
 
 
 # ---------------------------------------------------------------------
-# ODDS PIPELINE (formerly ODDSPIPELINE.py)
+# ODDS PIPELINE 
 # ---------------------------------------------------------------------
 # NOTE:
 # - This code expects certain constants to exist:
@@ -602,7 +602,7 @@ def run_odds_pipeline(raw_path: Path | str = RAW_ODDS_FILE) -> Path:
 
 
 # ---------------------------------------------------------------------
-# KAGGLE RAW GAMEWEEKS BUILD (formerly FPLKAGGLEIMPORT)
+# KAGGLE RAW GAMEWEEKS BUILD 
 # ---------------------------------------------------------------------
 # NOTE:
 # - This code expects external elements to exist:
