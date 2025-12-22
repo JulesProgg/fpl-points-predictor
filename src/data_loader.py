@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+
 import pandas as pd
 import kagglehub
 
@@ -20,15 +21,15 @@ import kagglehub
 #
 # IMPORTANT:
 # - This file mixes "loaders" and "pipelines" utilities on purpose (project choice).
-# - Some pipeline utilities depend on external constants / imports which must exist
-#   in the runtime context (see notes in their section). Code is kept identical.
+# - Some pipeline utilities depend on module-level constants defined below.
+# - Behaviour must remain identical: changes are visual/structural only.
 # =============================================================================
 
 
-# ---------------------------------------------------------------------
+# =============================================================================
 # PATHS (single source of truth)
-# ---------------------------------------------------------------------
-# File location: <project_root>/src/data/data_loader.py
+# =============================================================================
+# File location: <project_root>/src/data_loader.py
 
 PROJECT_ROOT = Path.cwd()
 
@@ -42,16 +43,15 @@ RAW_ODDS_FILE = DATA_RAW_DIR / "oddsdataset.csv"
 # Kaggle import output (raw GW dataset path)
 OUTPUT_PATH = RAW_GW_FILE
 
-
 # Processed outputs (produced by pipelines)
 PLAYER_GW_FILE = DATA_PROCESSED_DIR / "player_gameweeks.csv"
 EPL_FIXTURES_FILE = DATA_PROCESSED_DIR / "epl_fixtures_2016_23.csv"
 ODDS_FILE = DATA_PROCESSED_DIR / "bet365odds_epl_2016_23.csv"
 
-# ---------------------------------------------------------------------
-# ODDS PIPELINE CONSTANTS (required by run_odds_pipeline / assign_season_column)
-# ---------------------------------------------------------------------
 
+# =============================================================================
+# ODDS PIPELINE CONSTANTS (required by run_odds_pipeline / assign_season_column)
+# =============================================================================
 EPL_CODE = "E0"
 OUT_ODDS_FILE = ODDS_FILE
 
@@ -66,10 +66,9 @@ SEASON_RANGES = [
 ]
 
 
-# ---------------------------------------------------------------------
+# =============================================================================
 # CONFIG
-# ---------------------------------------------------------------------
-# Seasons supported end-to-end by the project (raw -> processed -> models)
+# =============================================================================
 ALLOWED_SEASONS = [
     "2016/17",
     "2017/18",
@@ -80,7 +79,6 @@ ALLOWED_SEASONS = [
     "2022/23",
 ]
 
-# Base columns expected in the raw player-gameweeks dataset
 GAMEWEEK_BASE_COLS = [
     "id",
     "name",
@@ -113,14 +111,12 @@ GAMEWEEK_BASE_COLS = [
     "gameweek",
 ]
 
-# Optional columns sometimes present in raw data sources
 OPTIONAL_COLS = ["opponent", "was_home"]
 
 
-# ---------------------------------------------------------------------
+# =============================================================================
 # NAME MAPPINGS
-# ---------------------------------------------------------------------
-# Mapping Bet365 -> FPL/Kaggle names (for consistent merges on team names)
+# =============================================================================
 TEAM_NAME_MAP_B365_TO_FPL = {
     "Man City": "Manchester City",
     "Man Utd": "Manchester United",
@@ -136,10 +132,6 @@ TEAM_NAME_MAP_B365_TO_FPL = {
     "Leeds": "Leeds United",
 }
 
-# ---------------------------------------------------------------------
-# FPL Kaggle import mapping (public API via __init__.py)
-# ---------------------------------------------------------------------
-# Column mapping to harmonise Kaggle dataset fields into project conventions.
 RENAME_MAP = {
     "element": "id",
     "name": "name",
@@ -165,12 +157,11 @@ RENAME_MAP = {
     "points": "total_points",
     "season": "season",
     "gameweek": "gameweek",
-    "round": "gameweek",  # au cas où certains fichiers utilisent "round"
+    "round": "gameweek",
     "was_home": "was_home",
     "opponent": "opponent",
 }
 
-# Target schema for the combined raw GW dataset generated from Kaggle import.
 TARGET_COLUMNS = [
     "id",
     "name",
@@ -206,9 +197,9 @@ TARGET_COLUMNS = [
 ]
 
 
-# ---------------------------------------------------------------------
+# =============================================================================
 # NORMALISATION HELPERS
-# ---------------------------------------------------------------------
+# =============================================================================
 def normalise_season_str(s: str) -> str:
     """
     Normalise season strings to a single format, e.g. '2016/17'.
@@ -237,11 +228,9 @@ def normalise_team_names(
     return df
 
 
-# ---------------------------------------------------------------------
-# LOADERS (public API via src/data/__init__.py)
-# ---------------------------------------------------------------------
-# These functions are pure "I/O + validation + normalisation" helpers.
-# They do not build/transform datasets beyond minimal standardisation.
+# =============================================================================
+# LOADERS (public API via src/__init__.py)
+# =============================================================================
 def load_clean_odds(path: Path | str = ODDS_FILE) -> pd.DataFrame:
     """
     Load the cleaned Bet365 odds dataset.
@@ -280,9 +269,7 @@ def load_clean_odds(path: Path | str = ODDS_FILE) -> pd.DataFrame:
 
 
 def load_fixtures(path: Path | str = EPL_FIXTURES_FILE) -> pd.DataFrame:
-    """
-    Load EPL fixtures (season, gameweek, home_team, away_team).
-    """
+    """Load EPL fixtures (season, gameweek, home_team, away_team)."""
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(
@@ -341,7 +328,6 @@ def load_raw_fixtures_source(path: Path | str = RAW_GW_FILE) -> pd.DataFrame:
 
     use_cols = ["season", "gameweek", "team", "opponent", "was_home"]
 
-    # pandas will raise if any is missing, but this yields a clearer message
     df = pd.read_csv(path)
     missing = [c for c in use_cols if c not in df.columns]
     if missing:
@@ -351,9 +337,7 @@ def load_raw_fixtures_source(path: Path | str = RAW_GW_FILE) -> pd.DataFrame:
 
 
 def load_raw_odds(path: Path | str = RAW_ODDS_FILE) -> pd.DataFrame:
-    """
-    Load the raw odds dataset with only useful columns.
-    """
+    """Load the raw odds dataset with only useful columns."""
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"Raw odds file not found: {path}")
@@ -382,7 +366,6 @@ def load_player_gameweeks(path: Path | str = PLAYER_GW_FILE) -> pd.DataFrame:
 
     df = pd.read_csv(path)
 
-    # Normalise season format
     if "season" in df.columns:
         df["season"] = df["season"].map(normalise_season_str)
 
@@ -397,15 +380,11 @@ def load_player_gameweeks(path: Path | str = PLAYER_GW_FILE) -> pd.DataFrame:
 
 
 # =============================================================================
-# PIPELINE UTILITIES 
+# PIPELINE UTILITIES
 # =============================================================================
-# The following functions are "data preparation" steps that produce datasets
-# stored under data/processed/. They rely on the loaders above.
-# =============================================================================
-
 
 # ---------------------------------------------------------------------
-# GAMEWEEKS CLEANING 
+# GAMEWEEKS CLEANING
 # ---------------------------------------------------------------------
 def filter_allowed_seasons(df: pd.DataFrame) -> pd.DataFrame:
     """Keep only seasons in ALLOWED_SEASONS."""
@@ -471,38 +450,29 @@ def build_player_gameweeks(raw_path: Path | str | None = None) -> Path:
 
 
 # ---------------------------------------------------------------------
-# FIXTURES BUILDING 
+# FIXTURES BUILDING
 # ---------------------------------------------------------------------
 def build_fixtures(raw_path: Path | str | None = None) -> Path:
     """
     Build a clean fixtures file for EPL seasons 2016/17 → 2022/23.
 
-    Logic:
-    - Load the raw player-gameweeks dataset (fixtures-relevant columns only).
-    - Filter to ALLOWED_SEASONS.
-    - Keep only rows where the player's team is playing at HOME.
-    - Drop duplicates (one row per match).
-    - Save to data/processed/epl_fixtures_2016_23.csv
-      with columns: season, gameweek, home_team, away_team
+    Output:
+      data/processed/epl_fixtures_2016_23.csv
+      columns: season, gameweek, home_team, away_team
     """
     df = load_raw_fixtures_source(raw_path) if raw_path else load_raw_fixtures_source()
 
-    # Filter seasons
     df = df[df["season"].isin(ALLOWED_SEASONS)].copy()
 
-    # Ensure gameweek is int
     try:
         df["gameweek"] = df["gameweek"].astype(int)
     except Exception:
         pass
 
-    # Normalise was_home to boolean
     df["was_home"] = df["was_home"].astype(str).str.lower().isin(["true", "1", "yes"])
 
-    # Keep only home matches
     df_home = df[df["was_home"]].copy()
 
-    # Build fixtures: one row per (season, GW, home_team, away_team)
     fixtures = (
         df_home[["season", "gameweek", "team", "opponent"]]
         .drop_duplicates()
@@ -518,19 +488,14 @@ def build_fixtures(raw_path: Path | str | None = None) -> Path:
 
 
 # ---------------------------------------------------------------------
-# ODDS PIPELINE 
+# ODDS PIPELINE
 # ---------------------------------------------------------------------
-# NOTE:
-# - This code expects certain constants to exist:
-#     SEASON_RANGES, EPL_CODE, OUT_ODDS_FILE
-# - The module keeps the code identical; ensure those constants are defined
-#   somewhere in your project scope before running this pipeline.
 def assign_season_column(df: pd.DataFrame) -> pd.DataFrame:
     """
     Add a 'season' column to the odds dataframe based on MatchDate.
 
     Season labels match the FPL format:
-    "2016/17", ..., "2022/23".
+      "2016/17", ..., "2022/23".
     Rows outside these date ranges are dropped.
     """
     df = df.copy()
@@ -548,21 +513,15 @@ def assign_season_column(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def run_odds_pipeline(raw_path: Path | str = RAW_ODDS_FILE) -> Path:
-    """
-    Run the full odds pipeline and save to data/processed/bet365odds_epl_2016_23.csv.
-    """
+    """Run the full odds pipeline and save to data/processed/bet365odds_epl_2016_23.csv."""
     odds = load_raw_odds(raw_path)
 
-    # Date conversion
     odds["MatchDate"] = pd.to_datetime(odds["MatchDate"])
 
-    # EPL only
     odds = odds[odds["Division"] == EPL_CODE].copy()
 
-    # Assign seasons and drop out-of-scope matches
     odds = assign_season_column(odds)
 
-    # Rename columns
     odds = odds.rename(
         columns={
             "MatchDate": "match_date",
@@ -574,7 +533,6 @@ def run_odds_pipeline(raw_path: Path | str = RAW_ODDS_FILE) -> Path:
         }
     )
 
-    # Team name normalisation
     team_fix = {
         "Nott'm Forest": "Nottingham Forest",
         "Nottm Forest": "Nottingham Forest",
@@ -582,19 +540,16 @@ def run_odds_pipeline(raw_path: Path | str = RAW_ODDS_FILE) -> Path:
     odds["home_team"] = odds["home_team"].replace(team_fix)
     odds["away_team"] = odds["away_team"].replace(team_fix)
 
-    # Implied probabilities
     odds["p_home_implied"] = 1.0 / odds["home_win_odds"]
     odds["p_draw_implied"] = 1.0 / odds["draw_odds"]
     odds["p_away_implied"] = 1.0 / odds["away_win_odds"]
 
     total = odds["p_home_implied"] + odds["p_draw_implied"] + odds["p_away_implied"]
 
-    # Normalised probabilities
     odds["pnorm_home_win"] = odds["p_home_implied"] / total
     odds["pnorm_draw"] = odds["p_draw_implied"] / total
     odds["pnorm_away_win"] = odds["p_away_implied"] / total
 
-    # Save
     DATA_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     odds.to_csv(OUT_ODDS_FILE, index=False)
 
@@ -602,12 +557,8 @@ def run_odds_pipeline(raw_path: Path | str = RAW_ODDS_FILE) -> Path:
 
 
 # ---------------------------------------------------------------------
-# KAGGLE RAW GAMEWEEKS BUILD 
+# KAGGLE RAW GAMEWEEKS BUILD
 # ---------------------------------------------------------------------
-# NOTE:
-# - This code expects external elements to exist:
-#     kagglehub, OUTPUT_PATH
-# - Code is kept identical: ensure these names are available at runtime.
 def build_player_gameweeks_raw_from_kaggle() -> Path:
     """
     Download the Kaggle dataset:
@@ -633,21 +584,17 @@ def build_player_gameweeks_raw_from_kaggle() -> Path:
 
     df = pd.read_csv(csv_path)
 
-    # Rename columns to standard names
     rename_map = {k: v for k, v in RENAME_MAP.items() if k in df.columns}
     df = df.rename(columns=rename_map)
 
-    # Remove duplicated columns (e.g., two 'gameweek')
     df = df.loc[:, ~df.columns.duplicated()]
 
-    # Create starts if missing: starts=1 if minutes >= 60
     if "starts" not in df.columns:
         if "minutes" in df.columns:
             df["starts"] = (df["minutes"] >= 60).astype(int)
         else:
             df["starts"] = pd.NA
 
-    # Create expected_* columns if absent
     for col in [
         "expected_goals",
         "expected_assists",
@@ -657,15 +604,12 @@ def build_player_gameweeks_raw_from_kaggle() -> Path:
         if col not in df.columns:
             df[col] = pd.NA
 
-    # Ensure all target columns exist
     for col in TARGET_COLUMNS:
         if col not in df.columns:
             df[col] = pd.NA
 
-    # Keep only target columns in target order
     df = df[TARGET_COLUMNS].copy()
 
-    # Save to data/raw/player_gameweeks_raw.csv
     DATA_RAW_DIR.mkdir(parents=True, exist_ok=True)
     df.to_csv(OUTPUT_PATH, index=False)
 

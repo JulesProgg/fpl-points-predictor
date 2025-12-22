@@ -9,8 +9,11 @@ It contains:
 - Bookmaker-related benchmarks (Bet365-based team strength, match-by-match comparison)
 - Gameweek-level model evaluation utilities (MAE-based backtesting on a held-out season)
 - Simple baselines and legacy wrappers kept for compatibility
-
 """
+
+# =============================================================================
+# IMPORTS
+# =============================================================================
 
 from typing import Tuple
 
@@ -28,9 +31,9 @@ from src.data_loader import load_clean_odds, load_fixtures
 from src.models import _add_anytime_lags, _add_seasonal_lags_with_prev5
 
 
-# ----------------------------------------------------------------------
+# =============================================================================
 # BOOKMAKER BENCHMARKS (BET365-BASED)
-# ----------------------------------------------------------------------
+# =============================================================================
 
 
 def compute_team_strength(odds_df: pd.DataFrame) -> pd.DataFrame:
@@ -159,9 +162,7 @@ def compare_model_vs_bookmakers(
 
     if minute_cols:
         preds_all["recent_minutes_mean"] = preds_all[minute_cols].mean(axis=1)
-        preds_all["playing_weight"] = (
-            (preds_all["recent_minutes_mean"] / 90.0).clip(0.0, 1.0)
-        )
+        preds_all["playing_weight"] = (preds_all["recent_minutes_mean"] / 90.0).clip(0.0, 1.0)
     else:
         preds_all["playing_weight"] = 1.0
 
@@ -192,9 +193,7 @@ def compare_model_vs_bookmakers(
     # 4) Merge home team predicted strength
     # ------------------------------------------------------
     comp = matches.merge(
-        team_strength.rename(
-            columns={"team": "home_team", "predicted_team_points": "pred_home_points"}
-        ),
+        team_strength.rename(columns={"team": "home_team", "predicted_team_points": "pred_home_points"}),
         on=["season", "gameweek", "home_team"],
         how="left",
     )
@@ -203,9 +202,7 @@ def compare_model_vs_bookmakers(
     # 5) Merge away team predicted strength
     # ------------------------------------------------------
     comp = comp.merge(
-        team_strength.rename(
-            columns={"team": "away_team", "predicted_team_points": "pred_away_points"}
-        ),
+        team_strength.rename(columns={"team": "away_team", "predicted_team_points": "pred_away_points"}),
         on=["season", "gameweek", "away_team"],
         how="left",
     )
@@ -281,9 +278,11 @@ def compare_model_vs_bookmakers(
         "abs_error",
     ]
 
-    comp = comp[cols_to_keep].sort_values(
-        ["gameweek", "home_team", "away_team"]
-    ).reset_index(drop=True)
+    comp = (
+        comp[cols_to_keep]
+        .sort_values(["gameweek", "home_team", "away_team"])
+        .reset_index(drop=True)
+    )
 
     return comp, mae, corr
 
@@ -317,17 +316,15 @@ def print_example_matches(comp: pd.DataFrame, n: int = 10) -> None:
         print()
 
 
-# ---------------------------------------------------------------------
-# GAMEWEEK-LEVEL MODEL EVALUATION 
-# ---------------------------------------------------------------------
-# The following functions are used to measure predictive performance on a held-out season.
+# =============================================================================
+# GAMEWEEK-LEVEL MODEL EVALUATION
+# =============================================================================
+# The functions below measure predictive performance on a held-out season.
 # They do NOT belong in src.models because src.models is strictly predictive.
 
 
 def _compute_mae(y_true, y_pred) -> float:
-    """
-    Compute Mean Absolute Error (MAE), ignoring any pair where either value is NaN.
-    """
+    """Compute Mean Absolute Error (MAE), ignoring any pair where either value is NaN."""
     y_true = np.asarray(y_true, dtype=float)
     y_pred = np.asarray(y_pred, dtype=float)
 
@@ -336,7 +333,6 @@ def _compute_mae(y_true, y_pred) -> float:
         raise ValueError("No valid (y_true, y_pred) pairs to compute MAE (all NaN).")
 
     return float(np.mean(np.abs(y_true[mask] - y_pred[mask])))
-
 
 
 def _compute_spearman(y_true, y_pred) -> float:
@@ -360,7 +356,6 @@ def _compute_spearman(y_true, y_pred) -> float:
     )
 
 
-
 def _build_gw_features_and_target(
     df: pd.DataFrame,
     feature_cols: list[str],
@@ -375,11 +370,7 @@ def _build_gw_features_and_target(
     cols_needed = feature_cols + [target_col]
     clean_df = df.dropna(subset=cols_needed).copy()
 
-    X = (
-        clean_df[feature_cols]
-        .replace([np.inf, -np.inf], np.nan)
-        .fillna(0.0)
-    )
+    X = clean_df[feature_cols].replace([np.inf, -np.inf], np.nan).fillna(0.0)
     y = clean_df[target_col].astype(float)
 
     return X, y
@@ -402,9 +393,7 @@ def _evaluate_anytime_linear_gw(
     max_lag: int,
     test_season: str = "2022/23",
 ) -> float:
-    """
-    Evaluate a linear regression GW model using "anytime" lags.
-    """
+    """Evaluate a linear regression GW model using "anytime" lags."""
     df = load_player_gameweeks()
     df = _add_anytime_lags(df, max_lag=max_lag, rolling_window=max_lag)
 
@@ -441,9 +430,7 @@ def evaluate_linear_gw_model_lag10(test_season: str = "2022/23") -> float:
 
 
 def evaluate_linear_gw_model_seasonal(test_season: str = "2022/23") -> float:
-    """
-    Seasonal linear GW model evaluation using seasonal lags + fallback.
-    """
+    """Seasonal linear GW model evaluation using seasonal lags + fallback."""
     df = load_player_gameweeks()
     df = _add_seasonal_lags_with_prev5(df, max_lag=5)
 
@@ -465,9 +452,7 @@ def evaluate_linear_gw_model_seasonal(test_season: str = "2022/23") -> float:
 
 
 def evaluate_gbm_gw_model_seasonal(test_season: str = "2022/23") -> float:
-    """
-    Seasonal GradientBoostingRegressor GW model evaluation using seasonal lags + fallback.
-    """
+    """Seasonal GradientBoostingRegressor GW model evaluation using seasonal lags + fallback."""
     df = load_player_gameweeks()
     df = _add_seasonal_lags_with_prev5(df, max_lag=5)
 
@@ -519,18 +504,16 @@ def evaluate_gw_baseline_lag1(test_season: str = "2022/23") -> float:
     return float(mae)
 
 
-# ---------------------------------------------------------------------
+# =============================================================================
 # WITHIN-SEASON (STRICT) LINEAR MODEL EVALUATION (ALTERNATIVE)
-# ---------------------------------------------------------------------
+# =============================================================================
 
 
 def prepare_gw_lag_dataset(
     df: pd.DataFrame,
     test_season: str = "2022/23",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Prepare a within-season lag dataset (no cross-season lags).
-    """
+    """Prepare a within-season lag dataset (no cross-season lags)."""
     df = df.sort_values(["player_id", "season", "gameweek"]).copy()
 
     group_cols = ["player_id", "season"]
@@ -549,9 +532,7 @@ def prepare_gw_lag_dataset(
 
 
 def evaluate_linear_gw_model(test_season: str = "2022/23") -> float:
-    """
-    Evaluate a within-season linear GW model (3 lags + rolling mean).
-    """
+    """Evaluate a within-season linear GW model (3 lags + rolling mean)."""
     df = load_player_gameweeks()
     train_df, test_df = prepare_gw_lag_dataset(df, test_season=test_season)
 
@@ -574,28 +555,25 @@ def evaluate_linear_gw_model(test_season: str = "2022/23") -> float:
     return float(mae)
 
 
-# ---------------------------------------------------------------------
+# =============================================================================
 # LEGACY WRAPPERS (BACKWARD COMPATIBILITY)
-# ---------------------------------------------------------------------
+# =============================================================================
 
 
 def evaluate_linear_model(test_season: str = "2022/23") -> float:
-    """
-    Legacy alias kept for backward compatibility.
-    """
+    """Legacy alias kept for backward compatibility."""
     return evaluate_linear_gw_model(test_season=test_season)
 
 
 def evaluate_gradient_boosting_model(test_season: str = "2022/23") -> float:
-    """
-    Legacy alias kept for backward compatibility.
-    """
+    """Legacy alias kept for backward compatibility."""
     return evaluate_gbm_gw_model_seasonal(test_season=test_season)
 
 
-# ---------------------------------------------------------------------
+# =============================================================================
 # USEFUL FUNCTIONS FOR METRICS AND PLOTS VISUALISATION
-# ---------------------------------------------------------------------
+# =============================================================================
+
 
 def _compute_rmse(y_true, y_pred) -> float:
     y_true = np.asarray(y_true, dtype=float)
@@ -630,9 +608,7 @@ def get_ytrue_ypred_anytime_linear_gw(
     max_lag: int,
     test_season: str = "2022/23",
 ) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Return (y_true, y_pred) for the anytime linear GW model.
-    """
+    """Return (y_true, y_pred) for the anytime linear GW model."""
     df = load_player_gameweeks()
     df = _add_anytime_lags(df, max_lag=max_lag, rolling_window=max_lag)
 
@@ -655,9 +631,7 @@ def get_ytrue_ypred_anytime_linear_gw(
 def get_ytrue_ypred_seasonal_linear_gw(
     test_season: str = "2022/23",
 ) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Return (y_true, y_pred) for the seasonal linear GW model.
-    """
+    """Return (y_true, y_pred) for the seasonal linear GW model."""
     df = load_player_gameweeks()
     df = _add_seasonal_lags_with_prev5(df, max_lag=5)
 
@@ -680,9 +654,7 @@ def get_ytrue_ypred_seasonal_linear_gw(
 def get_ytrue_ypred_seasonal_gbm_gw(
     test_season: str = "2022/23",
 ) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Return (y_true, y_pred) for the seasonal GBM GW model.
-    """
+    """Return (y_true, y_pred) for the seasonal GBM GW model."""
     df = load_player_gameweeks()
     df = _add_seasonal_lags_with_prev5(df, max_lag=5)
 
@@ -727,7 +699,6 @@ def get_test_predictions_seasonal_gbm_gw(
     feature_cols = [f"points_lag_{k}" for k in range(1, 4)]
     feature_cols.append("points_lag_mean")
 
-    # Train on all other seasons
     train_df = df[df["season"] != test_season].copy()
     train_df = train_df.dropna(subset=feature_cols + ["points"]).copy()
 
@@ -736,24 +707,15 @@ def get_test_predictions_seasonal_gbm_gw(
             f"No training data available for GW model when excluding season {test_season!r}."
         )
 
-    # Test season
     test_df = df[df["season"] == test_season].copy()
     test_df = test_df.dropna(subset=feature_cols + ["points"]).copy()
     if test_df.empty:
         raise ValueError(f"No test data available for season {test_season!r}.")
 
-    X_train = (
-        train_df[feature_cols]
-        .replace([np.inf, -np.inf], np.nan)
-        .fillna(0.0)
-    )
+    X_train = train_df[feature_cols].replace([np.inf, -np.inf], np.nan).fillna(0.0)
     y_train = train_df["points"].astype(float)
 
-    X_test = (
-        test_df[feature_cols]
-        .replace([np.inf, -np.inf], np.nan)
-        .fillna(0.0)
-    )
+    X_test = test_df[feature_cols].replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
     gbm = GradientBoostingRegressor(
         random_state=42,
@@ -765,11 +727,10 @@ def get_test_predictions_seasonal_gbm_gw(
 
     y_pred = gbm.predict(X_test.to_numpy(dtype=float))
 
-    out = test_df[
-        ["player_id", "name", "team", "position", "season", "gameweek", "points"]
-    ].copy()
+    out = test_df[["player_id", "name", "team", "position", "season", "gameweek", "points"]].copy()
     out["predicted_points"] = np.asarray(y_pred, dtype=float)
     out["error"] = out["predicted_points"] - out["points"]
     out["abs_error"] = out["error"].abs()
 
     return out.reset_index(drop=True)
+

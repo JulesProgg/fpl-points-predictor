@@ -49,9 +49,9 @@ from sklearn.linear_model import LinearRegression
 from src import load_player_gameweeks
 
 
-# ---------------------------------------------------------------------
-# FEATURE ENGINEERING: LAG CONSTRUCTION
-# ---------------------------------------------------------------------
+# =============================================================================
+# FEATURE ENGINEERING (LAG CONSTRUCTION)
+# =============================================================================
 
 
 def _add_anytime_lags(
@@ -150,9 +150,9 @@ def _add_minute_lags(df: pd.DataFrame, max_lag: int = 3) -> pd.DataFrame:
     return df
 
 
-# ---------------------------------------------------------------------
-# MAIN PREDICTION ENTRY POINT
-# ---------------------------------------------------------------------
+# =============================================================================
+# PUBLIC API (MAIN PREDICTION ENTRY POINT)
+# =============================================================================
 
 
 def predict_gw_all_players(
@@ -203,8 +203,15 @@ def predict_gw_all_players(
     ]
 
     # ------------------------------------------------------------------
-    # ANYTIME LINEAR GW MODELS
+    # MODEL TRAINING
     # ------------------------------------------------------------------
+    # IMPORTANT:
+    # - We intentionally keep model-specific blocks explicit (no factorisation)
+    #   to avoid any behavioural changes in data handling / dtype conversion.
+
+    # -----------------------------
+    # ANYTIME LINEAR GW MODELS
+    # -----------------------------
     if model in {"gw_lag3", "gw_lag5", "gw_lag10"}:
         max_lag = int(model.split("lag")[1])
         df = _add_anytime_lags(df, max_lag=max_lag, rolling_window=max_lag)
@@ -225,9 +232,9 @@ def predict_gw_all_players(
         reg = LinearRegression()
         reg.fit(X_train, y_train)
 
-    # ------------------------------------------------------------------
+    # -----------------------------
     # SEASONAL LINEAR GW MODEL
-    # ------------------------------------------------------------------
+    # -----------------------------
     elif model in {"gw_seasonal_linear", "gw_seasonal"}:
         df = _add_seasonal_lags_with_prev5(df, max_lag=5)
 
@@ -246,9 +253,9 @@ def predict_gw_all_players(
         reg = LinearRegression()
         reg.fit(X_train, y_train)
 
-    # ------------------------------------------------------------------
+    # -----------------------------
     # SEASONAL GBM GW MODEL
-    # ------------------------------------------------------------------
+    # -----------------------------
     elif model == "gw_seasonal_gbm":
         df = _add_seasonal_lags_with_prev5(df, max_lag=5)
 
@@ -264,15 +271,24 @@ def predict_gw_all_players(
         )
 
         # -----------------------------
-        # BIG-IMPACT CHANGES (simple)
-        # 1) log-transform target to reduce skew and "mean regression"
-        # 2) squared_error to emphasize large errors (haul games)
+        # BIG-IMPACT CHANGES (simple, robust)
+        # 1) log-transform target (log1p) to reduce skew and "mean regression"
+        #    → applied only when mathematically valid (FPL points can be negative)
+        # 2) squared_error loss to emphasize large errors (haul games)
         # 3) sample_weight to upweight high-point outcomes
         # -----------------------------
         y_points = train_df["points"].astype(float).to_numpy()
-        y_train = np.log1p(y_points)
+
+        # log1p is only defined for y > -1; fallback to raw points if negatives exist
+        if np.nanmin(y_points) > -1.0:
+            y_train = np.log1p(y_points)
+            _gbm_target_is_log1p = True
+        else:
+            y_train = y_points
+            _gbm_target_is_log1p = False
 
         sample_weight = 1.0 + 0.15 * y_points  # simple, stable weighting
+
 
         reg = GradientBoostingRegressor(
             random_state=42,
@@ -282,7 +298,6 @@ def predict_gw_all_players(
             loss="squared_error",    # RMSE-oriented
         )
         reg.fit(X_train, y_train, sample_weight=sample_weight)
-
 
     else:
         raise ValueError(f"Unknown GW model: {model!r}")
@@ -316,9 +331,9 @@ def predict_gw_all_players(
 
     test_df["predicted_points"] = y_pred
 
-
     minute_cols = [c for c in test_df.columns if c.startswith("minutes_lag_")]
 
-    return test_df[
-        cols_out + minute_cols
-    ].sort_values(["season", "gameweek", "team", "name"])
+    return test_df[cols_out + minute_cols].sort_values(
+        ["season", "gameweek", "team", "name"]
+    )
+
