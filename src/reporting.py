@@ -31,6 +31,40 @@ def _save_fig(fig, path: Path) -> None:
     fig.savefig(path, dpi=200)
     plt.close(fig)
 
+def _write_table_csv_md(df: pd.DataFrame, out_base: Path) -> None:
+    """Write df to CSV + compact Markdown with base path (no extension)."""
+    _ensure_dir(out_base.parent)
+
+    # 1) CSV full fidelity
+    df.to_csv(out_base.with_suffix(".csv"), index=False, encoding="utf-8")
+
+    # 2) Markdown compact view
+    md_df = df.copy()
+
+    # Short headers to prevent wrapping
+    col_rename = {
+        "position": "pos",
+        "gameweek": "gw",
+        "predicted_points": "pred_points",
+        "actual_points": "act_points",
+    }
+    md_df = md_df.rename(columns={k: v for k, v in col_rename.items() if k in md_df.columns})
+
+    # Format numeric columns to reduce width
+    for c in ["pred_points", "act_points", "error", "abs_error", "top11_sum", "top11_avg"]:
+        if c in md_df.columns:
+            md_df[c] = pd.to_numeric(md_df[c], errors="coerce").map(
+                lambda x: f"{x:.2f}" if pd.notna(x) else ""
+            )
+
+    try:
+        md = md_df.to_markdown(index=False, tablefmt="github")
+    except Exception:
+        md = md_df.to_string(index=False)
+
+    out_base.with_suffix(".md").write_text(md + "\n", encoding="utf-8")
+
+
 
 def _plot_pred_vs_actual(y_true: np.ndarray, y_pred: np.ndarray, title: str):
     fig = plt.figure()
@@ -551,7 +585,7 @@ def export_gw_results(
     (metrics_dir / "gw_leaderboard.json").write_text(json.dumps(leaderboard, indent=2), encoding="utf-8")
 
     # -----------------------------
-    # NEW: Predictions random sample (10 players, 1 random GW each)
+    # Predictions random sample (10 players, 1 random GW each)
     # -----------------------------
     try:
         preds = get_test_predictions_seasonal_gbm_gw(test_season=test_season)
@@ -806,17 +840,6 @@ def _resolve_points_col(df: pd.DataFrame) -> str:
     )
 
 
-def _write_table_csv_md(df: pd.DataFrame, out_base: Path) -> None:
-    """Write df to CSV + Markdown with base path (no extension)."""
-    _ensure_dir(out_base.parent)
-    df.to_csv(out_base.with_suffix(".csv"), index=False, encoding="utf-8")
-    try:
-        md = df.to_markdown(index=False)
-    except Exception:
-        md = df.to_string(index=False)
-    out_base.with_suffix(".md").write_text(md + "\n", encoding="utf-8")
-
-
 def export_tables_results(
     df: pd.DataFrame,
     *,
@@ -844,6 +867,14 @@ def export_tables_results(
     _ensure_dir(tables_dir)
 
     df0 = df.copy()
+
+    # Canonicalize ground-truth points column to "actual_points"
+    if "actual_points" not in df0.columns:
+        if "points" in df0.columns:
+            df0 = df0.rename(columns={"points": "actual_points"})
+        elif "total_points" in df0.columns:
+            df0 = df0.rename(columns={"total_points": "actual_points"})
+
 
     # Resolve column aliases
     c_season = _resolve_first_existing(df0, ["season"])
@@ -875,12 +906,13 @@ def export_tables_results(
 
 
     # ------------------------------------------------------------------
-    # 1a) Top players
+    # 1a) Random gameweek Top player
     # ------------------------------------------------------------------
     keep_cols = []
-    for c in [c_gw, c_pid, c_name, c_team, c_pos, pcol, "predicted_points", "actual_points", "total_points"]:
+    for c in [c_gw, c_pid, c_name, c_team, c_pos, pcol, "predicted_points", "actual_points"]:
         if c is not None and c in df0.columns and c not in keep_cols:
             keep_cols.append(c)
+
 
     top_players = (
         df0.dropna(subset=[pcol])
@@ -916,9 +948,11 @@ def export_tables_results(
 
     # ------------------------------------------------------------------
     # 1b) "Best XI" suggestion — Top 10 players for a given GW (GW10)
-    #     NEW: add opponent (from fixtures) and export as gw10_top10_players
     # ------------------------------------------------------------------
+
     target_gw_for_squad = 10  # GW choisi (ici fixé à 10)
+    squad_gw = pd.DataFrame()
+
 
     if c_gw is not None and c_gw in df0.columns:
         squad_candidates = df0.copy()
@@ -932,190 +966,221 @@ def export_tables_results(
             .reset_index(drop=True)
         )
 
-    # --------------------------------------------------------------
-    # Build opponent from fixtures gw10
-    # --------------------------------------------------------------
-    try:
-        from src.data_loader import load_fixtures
+    if squad_gw.empty:
+        (tables_dir / "gw10_top10_players.SKIPPED.txt").write_text(
+            f"Skipped gw10_top10_players: no rows for GW={target_gw_for_squad} "
+            f"(c_gw={c_gw!r}, df0_rows={len(df0)}).\n",
+            encoding="utf-8",
+        )
+    else:
+        # --------------------------------------------------------------
+        # Build opponent from fixtures gw10
+        # --------------------------------------------------------------
+        try:
+            from src.data_loader import load_fixtures
 
-        fixtures = load_fixtures().copy()
+            fixtures = load_fixtures().copy()
 
-        # Identify likely fixtures columns (best-effort)
-        fx_season = next((c for c in ["season", "Season", "season_str"] if c in fixtures.columns), None)
-        fx_gw = next((c for c in ["gameweek", "gw", "round", "event"] if c in fixtures.columns), None)
-        fx_home = next((c for c in ["home_team", "team_h", "home"] if c in fixtures.columns), None)
-        fx_away = next((c for c in ["away_team", "team_a", "away"] if c in fixtures.columns), None)
+            # Identify likely fixtures columns (best-effort)
+            fx_season = next((c for c in ["season", "Season", "season_str"] if c in fixtures.columns), None)
+            fx_gw = next((c for c in ["gameweek", "gw", "round", "event"] if c in fixtures.columns), None)
+            fx_home = next((c for c in ["home_team", "team_h", "home"] if c in fixtures.columns), None)
+            fx_away = next((c for c in ["away_team", "team_a", "away"] if c in fixtures.columns), None)
 
-        if fx_gw and fx_home and fx_away:
-            fixtures[fx_gw] = pd.to_numeric(fixtures[fx_gw], errors="coerce")
-            fx = fixtures[fixtures[fx_gw] == target_gw_for_squad].copy()
+            if fx_gw and fx_home and fx_away:
+                fixtures[fx_gw] = pd.to_numeric(fixtures[fx_gw], errors="coerce")
+                fx = fixtures[fixtures[fx_gw] == target_gw_for_squad].copy()
 
-            # If fixtures has a season col, try to filter to current season tag(s)
-            if fx_season is not None:
-                season_candidates = []
-                try:
-                    season_candidates.append(str(test_season))
-                except Exception:
-                    pass
-                try:
-                    season_candidates.append(str(season_tag))
-                except Exception:
-                    pass
-                if season_candidates:
-                    fx_season_str = fx[fx_season].astype(str)
-                    fx = fx[fx_season_str.isin(season_candidates)].copy()
+                # If fixtures has a season col, try to filter to current season tag(s)
+                if fx_season is not None:
+                    season_candidates = []
+                    try:
+                        season_candidates.append(str(test_season))
+                    except Exception:
+                        pass
+                    try:
+                        season_candidates.append(str(season_tag))
+                    except Exception:
+                        pass
+                    if season_candidates:
+                        fx_season_str = fx[fx_season].astype(str)
+                        fx = fx[fx_season_str.isin(season_candidates)].copy()
 
-            # Build mapping both directions
-            team_to_opp = {}
-            for _, r in fx.iterrows():
-                ht = r[fx_home]
-                at = r[fx_away]
-                if pd.notna(ht) and pd.notna(at):
-                    team_to_opp[ht] = at
-                    team_to_opp[at] = ht
+                # Build mapping both directions
+                team_to_opp = {}
+                for _, r in fx.iterrows():
+                    ht = r[fx_home]
+                    at = r[fx_away]
+                    if pd.notna(ht) and pd.notna(at):
+                        team_to_opp[ht] = at
+                        team_to_opp[at] = ht
 
-            # Apply mapping to squad_gw using c_team
-            if c_team is not None and c_team in squad_gw.columns:
-                # Direct mapping first
-                squad_gw["opponent"] = squad_gw[c_team].map(team_to_opp)
+                # Apply mapping to squad_gw using c_team
+                if c_team is not None and c_team in squad_gw.columns:
+                    # Direct mapping first
+                    squad_gw["opponent"] = squad_gw[c_team].map(team_to_opp)
 
-                # Fallback: if many NaNs, try a normalized string match (names vs names)
-                if squad_gw["opponent"].isna().mean() > 0.5:
-                    def _norm(x):
-                        return str(x).strip().lower()
+                    # Fallback: if many NaNs, try a normalized string match (names vs names)
+                    if squad_gw["opponent"].isna().mean() > 0.5:
+                        def _norm(x):
+                            return str(x).strip().lower()
 
-                    team_to_opp_norm = {_norm(k): v for k, v in team_to_opp.items()}
-                    squad_gw["opponent"] = squad_gw[c_team].map(lambda x: team_to_opp_norm.get(_norm(x), pd.NA))
+                        team_to_opp_norm = {_norm(k): v for k, v in team_to_opp.items()}
+                        squad_gw["opponent"] = squad_gw[c_team].map(lambda x: team_to_opp_norm.get(_norm(x), pd.NA))
+                else:
+                    squad_gw["opponent"] = pd.NA
             else:
                 squad_gw["opponent"] = pd.NA
-        else:
+
+        except Exception:
             squad_gw["opponent"] = pd.NA
 
-    except Exception:
-        squad_gw["opponent"] = pd.NA
+        # --------------------------------------------------------------
+        # Output columns
+        # --------------------------------------------------------------
 
-    # --------------------------------------------------------------
-    # Output columns: 
-    # --------------------------------------------------------------
-    keep_cols_squad = []
-    for c in [c_pid, c_name, c_team, "opponent", c_pos, pcol, "predicted_points", "actual_points", "total_points"]:
-        if c is not None and c in squad_gw.columns and c not in keep_cols_squad:
-            keep_cols_squad.append(c)
+        # Ensure ground-truth points column exists in the GW10 slice
+        if "actual_points" not in squad_gw.columns:
+            if "points" in squad_gw.columns:
+                squad_gw = squad_gw.rename(columns={"points": "actual_points"})
+            elif "total_points" in squad_gw.columns:
+                squad_gw = squad_gw.rename(columns={"total_points": "actual_points"})
 
-    squad_gw_out = squad_gw[keep_cols_squad].copy() if keep_cols_squad else squad_gw.copy()
+        # Build keep columns (only include columns that actually exist)
+        keep_cols_squad: list[str] = []
+        for c in [c_pid, c_name, c_team, "opponent", c_pos, pcol, "predicted_points", "actual_points"]:
+            if c is not None and c in squad_gw.columns and c not in keep_cols_squad:
+                keep_cols_squad.append(c)
 
-    # Renaming mapping (player_id/name/team/position)
-    rename_squad = {}
-    if c_pid and c_pid in squad_gw_out.columns:
-        rename_squad[c_pid] = "player_id"
-    if c_name and c_name in squad_gw_out.columns:
-        rename_squad[c_name] = "name"
-    if c_team and c_team in squad_gw_out.columns:
-        rename_squad[c_team] = "team"
-    if c_pos and c_pos in squad_gw_out.columns:
-        rename_squad[c_pos] = "position"
-    # opponent is already named "opponent" (keep as-is)
+        # Slice to output
+        squad_gw_out = squad_gw[keep_cols_squad].copy() if keep_cols_squad else squad_gw.copy()
 
-    squad_gw_out = squad_gw_out.rename(columns=rename_squad)
+        # Renaming mapping (player_id/name/team/position)
+        rename_squad: dict[str, str] = {}
+        if c_pid and c_pid in squad_gw_out.columns:
+            rename_squad[c_pid] = "player_id"
+        if c_name and c_name in squad_gw_out.columns:
+            rename_squad[c_name] = "name"
+        if c_team and c_team in squad_gw_out.columns:
+            rename_squad[c_team] = "team"
+        if c_pos and c_pos in squad_gw_out.columns:
+            rename_squad[c_pos] = "position"
+        # "opponent" stays as-is
+        # predicted_points / actual_points stay as-is (canonical names)
 
-    # Numeric formatting (same as above)
-    for col in [pcol, "predicted_points", "actual_points", "total_points"]:
-        if col in squad_gw_out.columns:
-            squad_gw_out[col] = pd.to_numeric(squad_gw_out[col], errors="coerce").round(3)
+        squad_gw_out = squad_gw_out.rename(columns=rename_squad)
+
+        # Numeric formatting
+        num_cols = []
+        for c in [pcol, "predicted_points", "actual_points"]:
+            if c is not None and c not in num_cols:
+                num_cols.append(c)
+
+        for col in num_cols:
+            if col in squad_gw_out.columns:
+                squad_gw_out[col] = pd.to_numeric(squad_gw_out[col], errors="coerce").round(3)
 
 
-    # NEW: compact team/opponent names to optimize markdown width
-    def _compact_team_name(x: object) -> str:
-        if pd.isna(x):
-            return ""
-        s = str(x)
+        # compact team/opponent names to optimize markdown width
+        def _compact_team_name(x: object) -> str:
+            if pd.isna(x):
+                return ""
+            s = str(x)
 
-        repl = {
-            "Brighton & Hove Albion": "Brighton",
-            "Tottenham Hotspur": "Spurs",
-            "Manchester City": "Man City",
-            "Manchester United": "Man United",
-            "Newcastle United": "Newcastle",
-            "Wolverhampton Wanderers": "Wolves",
-            "Nottingham Forest": "Nott'm Forest",
-            "West Ham United": "West Ham",
-            "AFC Bournemouth": "Bournemouth",
-            "Sheffield United": "Sheff Utd",
-            "Crystal Palace": "Palace",
+            repl = {
+                "Brighton & Hove Albion": "Brighton",
+                "Tottenham Hotspur": "Spurs",
+                "Manchester City": "Man City",
+                "Manchester United": "Man United",
+                "Newcastle United": "Newcastle",
+                "Wolverhampton Wanderers": "Wolves",
+                "Nottingham Forest": "Nott'm Forest",
+                "West Ham United": "West Ham",
+                "AFC Bournemouth": "Bournemouth",
+                "Sheffield United": "Sheff Utd",
+                "Crystal Palace": "Palace",
+            }
+            return repl.get(s, s)
+
+        for c in ["team", "opponent"]:
+            if c in squad_gw_out.columns:
+                squad_gw_out[c] = squad_gw_out[c].map(_compact_team_name)
+    
+        # --------------------------------------------------------------
+        # Nbuild a dedicated compact "display" table 
+        # --------------------------------------------------------------
+        display_rename = {
+            "position": "pos",
+            "predicted_points": "pred_points",
+            "actual_points": "act_points",
         }
-        return repl.get(s, s)
 
-    for c in ["team", "opponent"]:
-        if c in squad_gw_out.columns:
-            squad_gw_out[c] = squad_gw_out[c].map(_compact_team_name)
-
-    _write_table_csv_md(
-        squad_gw_out,
-        tables_dir / "gw10_top10_players",
-    )
-
-
-
-
-     
-
-    # ------------------------------------------------------------------
-    # 2) Top teams (sum of top-11 predicted points)
-    # ------------------------------------------------------------------
-    if c_team is None:
-        raise KeyError("export_tables_results: cannot compute team table without a 'team' column.")
-    if "predicted_points" not in df0.columns:
-        raise KeyError(
-            "export_tables_results: team strength requires 'predicted_points' column "
-            "(since you asked 'somme des points prédits des 11 meilleurs')."
+        squad_gw_display = squad_gw_out.rename(
+            columns={k: v for k, v in display_rename.items() if k in squad_gw_out.columns}
         )
 
-    df0["predicted_points"] = pd.to_numeric(df0["predicted_points"], errors="coerce")
-    df_team = df0.dropna(subset=[c_team, "predicted_points"]).copy()
-
-    # For each team: take top N predicted_points and sum
-    df_team = df_team.sort_values([c_team, "predicted_points"], ascending=[True, False])
-    topN = df_team.groupby(c_team, dropna=False, as_index=False).head(int(top_n_team_players))
-
-    team_strength = (
-    topN.groupby(c_team, dropna=False)["predicted_points"]
-    .sum(min_count=1)
-    .rename("top11_sum")  # RENAMED
-    .reset_index()
-    .rename(columns={c_team: "team"})
-    )
-
-    team_strength["top11_avg"] = (
-    team_strength["top11_sum"] / float(top_n_team_players)
-    )
+        
+        _write_table_csv_md(squad_gw_display, tables_dir / "gw10_top10_players")
 
 
-    # Useful context columns
-    team_counts = (
-        df_team.groupby(c_team, dropna=False)
-        .agg(rows=("predicted_points", "size"), n_players_used=(c_name, "nunique") if c_name is not None else ("predicted_points", "size"))
+
+        # ------------------------------------------------------------------
+        # 2) Team top 5 (sum of top-11 predicted points players)
+        # ------------------------------------------------------------------
+        if c_team is None:
+            raise KeyError("export_tables_results: cannot compute team table without a 'team' column.")
+        if "predicted_points" not in df0.columns:
+            raise KeyError(
+                "export_tables_results: team strength requires 'predicted_points' column "
+                "(since you asked 'somme des points prédits des 11 meilleurs')."
+            )
+
+        df0["predicted_points"] = pd.to_numeric(df0["predicted_points"], errors="coerce")
+        df_team = df0.dropna(subset=[c_team, "predicted_points"]).copy()
+
+        # For each team: take top N predicted_points and sum
+        df_team = df_team.sort_values([c_team, "predicted_points"], ascending=[True, False])
+        topN = df_team.groupby(c_team, dropna=False, as_index=False).head(int(top_n_team_players))
+
+        team_strength = (
+        topN.groupby(c_team, dropna=False)["predicted_points"]
+        .sum(min_count=1)
+        .rename("top11_sum")  # RENAMED
         .reset_index()
         .rename(columns={c_team: "team"})
-    )
+        )
 
-    top_teams_out = team_strength.merge(team_counts, on="team", how="left")
-    top_teams_out["top_n_players_used"] = int(top_n_team_players)
-
-    top_teams_out = (
-    top_teams_out.sort_values("top11_sum", ascending=False)
-    .head(int(top_teams_n))
-    .reset_index(drop=True)
-    )
+        team_strength["top11_avg"] = (
+        team_strength["top11_sum"] / float(top_n_team_players)
+        )
 
 
-    top_teams_out["top11_sum"] = pd.to_numeric(
-    top_teams_out["top11_sum"], errors="coerce").round(3)
+        # Useful context columns
+        team_counts = (
+            df_team.groupby(c_team, dropna=False)
+            .agg(rows=("predicted_points", "size"), n_players_used=(c_name, "nunique") if c_name is not None else ("predicted_points", "size"))
+            .reset_index()
+            .rename(columns={c_team: "team"})
+        )
+
+        top_teams_out = team_strength.merge(team_counts, on="team", how="left")
+        top_teams_out["top_n_players_used"] = int(top_n_team_players)
+
+        top_teams_out = (
+        top_teams_out.sort_values("top11_sum", ascending=False)
+        .head(int(top_teams_n))
+        .reset_index(drop=True)
+        )
 
 
-    _write_table_csv_md(
-        top_teams_out,
-        tables_dir / "team_top5",
-    )
+        top_teams_out["top11_sum"] = pd.to_numeric(
+        top_teams_out["top11_sum"], errors="coerce").round(3)
+
+
+        _write_table_csv_md(
+            top_teams_out,
+            tables_dir / "team_top5",
+        )
 
     return {"top_players": top_players_out, "top_teams": top_teams_out}
 
