@@ -287,7 +287,8 @@ def predict_gw_all_players(
             y_train = y_points
             _gbm_target_is_log1p = False
 
-        sample_weight = 1.0 + 0.15 * y_points  # simple, stable weighting
+        sample_weight = 1.0 + 0.15 * np.clip(y_points, 0.0, None) # stable weighting
+
 
 
         reg = GradientBoostingRegressor(
@@ -324,10 +325,15 @@ def predict_gw_all_players(
 
     y_pred = reg.predict(X_test)
 
-    # If GBM: model was trained on log1p(points) -> invert transform
-    if model == "gw_seasonal_gbm":
+
+    # If GBM: invert transform only if we actually trained on log1p(points)
+    if model == "gw_seasonal_gbm" and _gbm_target_is_log1p:
         y_pred = np.expm1(y_pred)
-        y_pred = np.clip(y_pred, 0.0, 25.0)  # keep predictions in a plausible range
+
+    # Keep predictions in a plausible range
+    if model == "gw_seasonal_gbm":
+        y_pred = np.clip(y_pred, 0.0, 25.0)
+
 
     test_df["predicted_points"] = y_pred
 

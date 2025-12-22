@@ -1,296 +1,500 @@
-
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
-
-import pandas as pd
-import typer
 import os
-
-from src.data_loader import (
-    ALLOWED_SEASONS,
-    normalise_season_str,
-    build_player_gameweeks,
-    build_fixtures,
-    run_odds_pipeline,
-    build_player_gameweeks_raw_from_kaggle,
-)
-from src.models import predict_gw_all_players
-
-from src.evaluation import (
-    build_team_strength_table,
-    compare_model_vs_bookmakers,
-    print_example_matches,
-    evaluate_linear_gw_model_lag3,
-    evaluate_linear_gw_model_lag5,
-    evaluate_linear_gw_model_lag10,
-    evaluate_linear_gw_model_seasonal,
-    evaluate_gbm_gw_model_seasonal,
-    evaluate_gw_baseline_lag1,
-)
-
-from src.reporting import export_gw_results
+import sys
 
 
-app = typer.Typer(add_completion=False, help="FPL Points Predictor – Single entry point")
-
-PROJECT_ROOT = Path(__file__).resolve().parent
-os.chdir(PROJECT_ROOT)
-
-# ---------------------------------------------------------------------
-# Small utilities
-# ---------------------------------------------------------------------
-def _norm_season_or_exit(season: str) -> str:
-    s = normalise_season_str(season)
-    if s not in ALLOWED_SEASONS:
-        typer.echo(
-            f"ERROR: season {season!r} normalized to {s!r} is not supported.\n"
-            f"Supported seasons: {', '.join(ALLOWED_SEASONS)}"
-        )
-        raise typer.Exit(code=1)
-    return s
+def _hr(n: int = 70) -> str:
+    return "=" * n
 
 
-def _print_df(df: pd.DataFrame, head: int = 10) -> None:
-    if df is None or df.empty:
-        typer.echo("No rows to display.")
-        return
-    with pd.option_context("display.max_columns", 200, "display.width", 200):
-        typer.echo(df.head(head).to_string(index=False))
-
-
-def _save_df(df: pd.DataFrame, out: Optional[str]) -> None:
-    if not out:
-        return
-    out_path = Path(out)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(out_path, index=False)
-    typer.echo(f"Saved: {out_path}")
-
-
-# ---------------------------------------------------------------------
-# Commands
-# ---------------------------------------------------------------------
-@app.command()
-def predict(
-    season: str = typer.Option(..., "--season", help='Season, e.g. "2022/23".'),
-    gw: Optional[int] = typer.Option(None, "--gw", min=1, help="Gameweek number (omit for full season)."),
-    model: str = typer.Option("gw_seasonal_gbm", "--model", help="Model key."),
-    out: Optional[str] = typer.Option(None, "--out", help="Output CSV path."),
-    head: int = typer.Option(10, "--head", min=1, help="Rows to display."),
-):
+def _set_project_root() -> Path:
     """
-    Predict FPL points for all players for a given season (and optional gameweek).
+    Ensure execution from the project root (where main.py lives),
+    so that Path.cwd() used in src/data_loader.py resolves correctly.
     """
-    test_season = _norm_season_or_exit(season)
-
-    try:
-        df = predict_gw_all_players(model=model, test_season=test_season, gameweek=gw)
-    except Exception as e:
-        typer.echo(f"ERROR: prediction failed: {e}")
-        raise typer.Exit(code=1)
-
-    _print_df(df, head=head)
-    _save_df(df, out)
+    root = Path(__file__).resolve().parent
+    os.chdir(root)
+    return root
 
 
-@app.command("evaluate")
-def evaluate(
-    season: str = typer.Option("2022/23", "--season", help='Held-out season for evaluation, e.g. "2022/23".'),
-    model: str = typer.Option(
-        "gw_seasonal_gbm",
-        "--model",
-        help="Model key to evaluate. Supported: gw_baseline_lag1, gw_lag3, gw_lag5, gw_lag10, gw_seasonal_linear, gw_seasonal_gbm",
-    ),
-):
+def _status_line(label: str, status: str, details: str = "") -> str:
     """
-    Evaluate a GW-level model on a held-out season using MAE.
+    Standardize status lines: DONE / SKIPPED / WARNING / ERROR / INFO
     """
-    test_season = _norm_season_or_exit(season)
-
-    try:
-        if model == "gw_baseline_lag1":
-            mae = evaluate_gw_baseline_lag1(test_season=test_season)
-        elif model == "gw_lag3":
-            mae = evaluate_linear_gw_model_lag3(test_season=test_season)
-        elif model == "gw_lag5":
-            mae = evaluate_linear_gw_model_lag5(test_season=test_season)
-        elif model == "gw_lag10":
-            mae = evaluate_linear_gw_model_lag10(test_season=test_season)
-        elif model in {"gw_seasonal_linear", "gw_seasonal"}:
-            mae = evaluate_linear_gw_model_seasonal(test_season=test_season)
-        elif model == "gw_seasonal_gbm":
-            mae = evaluate_gbm_gw_model_seasonal(test_season=test_season)
-        else:
-            raise ValueError(f"Unknown evaluation model: {model!r}")
-    except Exception as e:
-        typer.echo(f"ERROR: evaluation failed: {e}")
-        raise typer.Exit(code=1)
-
-    typer.echo(f"MAE ({model}, test_season={test_season}): {mae:.4f}")
+    tail = f" | {details}" if details else ""
+    return f"   - {status}: {label}{tail}"
 
 
-@app.command("compare-bookmakers")
-def compare_bookmakers(
-    season: str = typer.Option(..., "--season", help='Season, e.g. "2022/23".'),
-    model: str = typer.Option("gw_seasonal_gbm", "--model", help="Predictive model key."),
-    out: Optional[str] = typer.Option(None, "--out", help="Output CSV path for match table."),
-    examples: int = typer.Option(10, "--examples", min=0, help="Number of example matches to print."),
-):
+def _df_to_string_one_line(df, cols: list[str] | None = None, float_round: int = 2) -> str:
     """
-    Compare model-implied home-win probabilities vs Bet365 (match-by-match) for a season.
+    Render a dataframe in a single compact line (records separated by " | ").
+    Intended for small tables (best-by-position, top3).
     """
-    test_season = _norm_season_or_exit(season)
+    import pandas as pd
 
-    try:
-        comp, mae, corr = compare_model_vs_bookmakers(model=model, test_season=test_season)
-    except Exception as e:
-        typer.echo(f"ERROR: bookmaker comparison failed: {e}")
-        raise typer.Exit(code=1)
+    if df is None or len(df) == 0:
+        return ""
 
-    typer.echo(f"Match-by-match comparison vs Bet365 – Season {test_season}, model={model}")
-    typer.echo(f"Mean Absolute Error (model vs Bet365 home-win prob): {mae:.3f}")
-    typer.echo(f"Correlation (model vs Bet365 home-win prob): {corr:.3f}")
+    tmp = df.copy()
+    if cols is not None:
+        cols = [c for c in cols if c in tmp.columns]
+        tmp = tmp[cols]
 
-    if examples > 0:
-        print_example_matches(comp, n=examples)
+    # Round numeric columns for compactness
+    for c in tmp.columns:
+        if pd.api.types.is_numeric_dtype(tmp[c]):
+            tmp[c] = pd.to_numeric(tmp[c], errors="coerce").round(float_round)
 
-    _save_df(comp, out)
+    # Convert each row to "col=value" chunks
+    parts: list[str] = []
+    for _, r in tmp.iterrows():
+        row_parts = []
+        for c in tmp.columns:
+            v = r.get(c, "")
+            row_parts.append(f"{c}={v}")
+        parts.append(", ".join(row_parts))
+    return " | ".join(parts)
 
 
-@app.command("team-strength")
-def team_strength(
-    out: Optional[str] = typer.Option(None, "--out", help="Output CSV path."),
-    head: int = typer.Option(20, "--head", min=1, help="Rows to display."),
-):
+def _print_df(df, cols: list[str], one_line: bool = False, float_round: int = 2) -> None:
     """
-    Build and display the aggregated Bet365 team strength table across all seasons.
+    Print dataframe either as standard table or compact one-liner.
     """
-    try:
-        df = build_team_strength_table()
-    except Exception as e:
-        typer.echo(f"ERROR: team strength failed: {e}")
-        raise typer.Exit(code=1)
+    import pandas as pd
 
-    _print_df(df, head=head)
-    _save_df(df, out)
-
-
-@app.command("build-data")
-def build_data(
-    kaggle: bool = typer.Option(False, "--kaggle", help="Download and build raw GW dataset from Kaggle."),
-    player_gameweeks: bool = typer.Option(False, "--player-gameweeks", help="Build processed player_gameweeks.csv from raw."),
-    fixtures: bool = typer.Option(False, "--fixtures", help="Build processed fixtures file from raw."),
-    odds: bool = typer.Option(False, "--odds", help="Run odds pipeline to build cleaned odds dataset."),
-):
-    """
-    Build datasets under data/raw and data/processed.
-
-    Examples:
-      - Build everything (typical first run):
-          python main.py build-data --kaggle --player-gameweeks --fixtures --odds
-
-      - Rebuild only processed datasets (assuming raw already exists):
-          python main.py build-data --player-gameweeks --fixtures --odds
-    """
-    # If user passes no flags, do the sensible default: build processed datasets
-    if not any([kaggle, player_gameweeks, fixtures, odds]):
-        player_gameweeks = True
-        fixtures = True
-        odds = True
-
-    try:
-        if kaggle:
-            p = build_player_gameweeks_raw_from_kaggle()
-            typer.echo(f"Built raw gameweeks from Kaggle: {p}")
-
-        if player_gameweeks:
-            p = build_player_gameweeks()
-            typer.echo(f"Built processed player_gameweeks: {p}")
-
-        if fixtures:
-            p = build_fixtures()
-            typer.echo(f"Built processed fixtures: {p}")
-
-        if odds:
-            p = run_odds_pipeline()
-            typer.echo(f"Built processed odds: {p}")
-
-    except Exception as e:
-        typer.echo(f"ERROR: build-data failed: {e}")
-        raise typer.Exit(code=1)
-
-
-@app.command("list")
-def list_info(
-    what: str = typer.Argument(..., help="What to list: seasons or models"),
-):
-    """
-    List supported seasons and model keys (CLI discovery).
-    """
-    if what == "seasons":
-        typer.echo("\n".join(ALLOWED_SEASONS))
+    if df is None or len(df) == 0:
+        print("   (empty)")
         return
 
-    if what == "models":
-        typer.echo(
-            "\n".join(
-                [
-                    # predictive keys (src.models)
-                    "gw_lag3",
-                    "gw_lag5",
-                    "gw_lag10",
-                    "gw_seasonal_linear (alias: gw_seasonal)",
-                    "gw_seasonal_gbm",
-                    # evaluation-only keys (main.py mapping)
-                    "gw_baseline_lag1 (evaluation only)",
-                ]
+    show_cols = [c for c in cols if c in df.columns]
+    out = df.copy()
+
+    # Apply rounding (only to columns that exist)
+    for c in show_cols:
+        if c in out.columns and pd.api.types.is_numeric_dtype(out[c]):
+            out[c] = pd.to_numeric(out[c], errors="coerce").round(float_round)
+
+    if one_line:
+        s = _df_to_string_one_line(out, cols=show_cols, float_round=float_round)
+        print(f"   {s}")
+    else:
+        print(out[show_cols].to_string(index=False))
+
+
+def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="FPL Points Predictor — main entrypoint (end-to-end runner)"
+    )
+    parser.add_argument("--season", default="2022/23", help='Test season string (e.g. "2022/23")')
+    parser.add_argument(
+    "--gw",
+    type=int,
+    default=None,
+    help="Override a single gameweek for the prediction demo (ignores --gws if set)",
+    )
+    parser.add_argument(
+        "--gws",
+        type=int,
+        nargs="+",
+        default=[5, 20, 35],
+        help="Gameweeks used for the prediction demo (default: 5 20 35)",
+    )
+
+    parser.add_argument("--output-dir", default="results", help="Output directory (default: results/)")
+
+    # Output formatting
+    parser.add_argument(
+        "--one-line",
+        action="store_true",
+        help="Print compact one-line tables for recommendations (reduces vertical space).",
+    )
+    parser.add_argument(
+        "--no-header",
+        action="store_true",
+        help="Do not print the big header block.",
+    )
+
+    # Pipeline steps (enabled by default)
+    parser.add_argument("--skip-export", action="store_true", help="Skip GW metrics/figures exports")
+    parser.add_argument("--skip-predict", action="store_true", help="Skip GW prediction demo")
+    parser.add_argument(
+        "--skip-sample-matches",
+        action="store_true",
+        help="Skip sample match team-strength export",
+    )
+
+    # Optional bookmaker comparison
+    parser.add_argument(
+        "--run-bookmakers",
+        action="store_true",
+        help="Run model vs Bet365 comparison (optional)",
+    )
+
+    args = parser.parse_args()
+    demo_gws = [int(args.gw)] if args.gw is not None else [int(x) for x in args.gws]
+
+
+    root = _set_project_root()
+    output_dir = Path(args.output_dir)
+
+    if not args.no_header:
+        print(_hr())
+        print("FPL Points Predictor — main.py")
+        print(f"Project root : {root}")
+        print(f"Test season  : {args.season}")
+        print(f"Demo GWs     : {demo_gws}")
+        print(f"Output dir   : {output_dir.resolve()}")
+        print(_hr())
+
+    # ------------------------------------------------------------------
+    # High-level imports (stable public API)
+    # ------------------------------------------------------------------
+    from src import predict_gw_all_players
+    from src.reporting import export_gw_results, export_sample_match_team_strength
+    from src.data_loader import (
+        PLAYER_GW_FILE,
+        EPL_FIXTURES_FILE,
+        ODDS_FILE,
+        RAW_GW_FILE,
+        RAW_ODDS_FILE,
+    )
+
+    # ------------------------------------------------------------------
+    # 0) Data availability check (informative only)
+    # ------------------------------------------------------------------
+    print("\n0) Data file checks (informative)")
+    checks = [
+        ("RAW_GW_FILE", RAW_GW_FILE),
+        ("RAW_ODDS_FILE", RAW_ODDS_FILE),
+        ("PLAYER_GW_FILE (processed)", PLAYER_GW_FILE),
+        ("EPL_FIXTURES_FILE (processed)", EPL_FIXTURES_FILE),
+        ("ODDS_FILE (processed)", ODDS_FILE),
+    ]
+    for label, p in checks:
+        pth = Path(p)
+        status = "OK" if pth.exists() else "MISSING"
+        print(f"   - {label}: {p}  -> {status}")
+
+    # ------------------------------------------------------------------
+    # 1) Export GW results (metrics + figures + tables)
+    # ------------------------------------------------------------------
+    print("\n1) Exporting GW results (metrics, figures, tables)")
+    if args.skip_export:
+        print(_status_line("export_gw_results", "SKIPPED", "--skip-export"))
+    else:
+        try:
+            df_metrics = export_gw_results(
+                test_season=args.season,
+                output_dir=output_dir,
             )
-        )
-        return
+            shape = getattr(df_metrics, "shape", None)
+            print(_status_line("export_gw_results", "DONE", f"metrics shape={shape}"))
+            print(
+                _status_line(
+                    "Outputs",
+                    "INFO",
+                    f"{output_dir}/metrics, {output_dir}/figures, {output_dir}/tables, {output_dir}/predictions",
+                )
+            )
+        except Exception as e:
+            print(_status_line("export_gw_results", "ERROR", f"{type(e).__name__}: {e}"))
+            raise
 
-    typer.echo("ERROR: unknown list target. Use: seasons or models")
-    raise typer.Exit(code=1)
+    # ------------------------------------------------------------------
+    # 2) Prediction demo (best buy per position) — runs on multiple GWs
+    # ------------------------------------------------------------------
+    print("\n2) Prediction demo: predict_gw_all_players")
+
+    if args.skip_predict:
+        print(_status_line("predict_gw_all_players", "SKIPPED", "--skip-predict"))
+    else:
+        try:
+            import pandas as pd
+            import numpy as np
+
+            SEP = "-" * 72  # separator line (same spirit as bookmaker output)
+            TABLE_COL_SPACE = {
+                "gameweek": 8,
+                "position": 8,
+                "name": 24,
+                "team": 22,
+                "predicted_points": 16,
+            }
+
+            def _print_table_indented(
+                df: pd.DataFrame,
+                cols: list[str],
+                *,
+                indent: str = "   ",
+                float_round: int = 2,
+                col_space: dict[str, int] | None = None,
+            ) -> None:
+                """Print a fixed-width console table (headers + values aligned)."""
+                if df is None or len(df) == 0:
+                    print(indent + "(empty)")
+                    return
+
+                out = df.copy()
+                cols_existing = [c for c in cols if c in out.columns]
+                out = out[cols_existing].copy()
+
+                # Round numeric columns for display
+                for c in out.select_dtypes(include="number").columns:
+                    out[c] = pd.to_numeric(out[c], errors="coerce").round(float_round)
+
+                # Use provided widths (keep same variable name to avoid touching anything else)
+                W = col_space or TABLE_COL_SPACE
+
+                def _fit(text: object, w: int) -> str:
+                    s = "" if pd.isna(text) else str(text)
+                    if len(s) > w:
+                        return (s[: w - 1] + "…") if w >= 2 else s[:w]
+                    return s.ljust(w)
+
+                def _fit_right(text: object, w: int) -> str:
+                    s = "" if pd.isna(text) else str(text)
+                    if len(s) > w:
+                        return s[-w:]
+                    return s.rjust(w)
+
+                # Header (same widths as rows)
+                header_parts: list[str] = []
+                for c in cols_existing:
+                    w = int(W.get(c, max(len(c), 10)))
+                    if c == "predicted_points":
+                        header_parts.append(c.rjust(w))
+                    else:
+                        header_parts.append(c.ljust(w))
+                print(indent + " ".join(header_parts).rstrip())
+
+                # Rows
+                for _, r in out.iterrows():
+                    row_parts: list[str] = []
+                    for c in cols_existing:
+                        w = int(W.get(c, max(len(c), 10)))
+                        v = r[c]
+                        if c == "predicted_points":
+                            v = "" if pd.isna(v) else f"{float(v):.{float_round}f}"
+                            row_parts.append(_fit_right(v, w))
+                        else:
+                            row_parts.append(_fit(v, w))
+                    print(indent + " ".join(row_parts).rstrip())
+
+            # demo_gws must be defined right after argparse:
+            # demo_gws = [int(args.gw)] if args.gw is not None else [int(x) for x in args.gws]
+            for gw in demo_gws:
+                print(f"\n{SEP}")
+                print(f"   GW {gw}")
+                print(f"{SEP}")
+
+                preds = predict_gw_all_players(
+                    model="gw_seasonal_gbm",
+                    test_season=args.season,
+                    gameweek=gw,
+                )
+
+                n_preds = 0 if preds is None else len(preds)
+                print(_status_line("predictions generated", "DONE", f"n={n_preds}"))
+                print(_status_line("Context", "INFO", f"gameweek={gw}"))
+
+                if preds is None or len(preds) == 0:
+                    continue
+
+                tmp = preds.copy()
+                tmp["predicted_points"] = pd.to_numeric(tmp["predicted_points"], errors="coerce")
+                tmp = tmp.dropna(subset=["predicted_points"])
+
+                # Enforce FPL position order everywhere (GK, DEF, MID, FWD)
+                POS_ORDER = ["GK", "DEF", "MID", "FWD"]
+                if "position" not in tmp.columns:
+                    print(_status_line("best-by-position", "WARNING", "'position' column missing"))
+                    continue
+                tmp["position"] = pd.Categorical(tmp["position"], categories=POS_ORDER, ordered=True)
+
+                # ----------------------------------------------------------
+                # Best buy per position (table)
+                # ----------------------------------------------------------
+                print("\n   Best buy per position:")
+
+                best_by_pos = (
+                    tmp.sort_values(["position", "predicted_points"], ascending=[True, False])
+                    .groupby("position", as_index=False, observed=True)
+                    .head(1)
+                    .sort_values("position")
+                    .reset_index(drop=True)
+                )
+
+                _print_table_indented(
+                    best_by_pos,
+                    cols=["gameweek", "position", "name", "team", "predicted_points"],
+                    indent="   ",
+                    float_round=2,
+                    col_space=TABLE_COL_SPACE,
+                )
+
+                # ------------------------------------------------------
+                # Top 3 options per position (table)
+                # ------------------------------------------------------
+                print("\n   Top 3 options per position:")
+
+                top3_by_pos = (
+                    tmp.sort_values(["position", "predicted_points"], ascending=[True, False])
+                    .groupby("position", as_index=False, observed=True)
+                    .head(3)
+                    .sort_values(["position", "predicted_points"], ascending=[True, False])
+                    .reset_index(drop=True)
+                    )
+
+                _print_table_indented(
+                    top3_by_pos,
+                    cols=["gameweek", "position", "name", "team", "predicted_points"],
+                    indent="   ",
+                    float_round=2,
+                    col_space=TABLE_COL_SPACE,
+                )
+
+        except Exception as e:
+            print(_status_line("prediction demo", "ERROR", f"{type(e).__name__}: {e}"))
+            raise
+
+    # ------------------------------------------------------------------
+    # 3) Sample match team-strength export (optional, non-blocking)
+    # ------------------------------------------------------------------
+    print("\n3) Exporting sample match team strength")
+    if args.skip_sample_matches:
+        print(_status_line("export_sample_match_team_strength", "SKIPPED", "--skip-sample-matches"))
+    else:
+        try:
+            sample = export_sample_match_team_strength(
+                test_season=args.season,
+                output_dir=output_dir,
+                top_n_players=11,
+                sample_n_matches=10,
+                seed=42,
+            )
+            print(_status_line("sample match team strength exported", "DONE", f"n={len(sample)}"))
+            print(_status_line("Output", "INFO", f"{output_dir}/predictions/"))
+
+        except Exception as e:
+            # Non-blocking: depends on fixtures/odds availability
+            print(_status_line("sample match export", "WARNING", f"{type(e).__name__}: {e}"))
 
 
-from pathlib import Path
+    # ------------------------------------------------------------------
+    # 4) Optional bookmaker comparison (explicit opt-in)
+    # ------------------------------------------------------------------
+    print("\n4) Bookmaker comparison (Bet365) — optional")
+    if not args.run_bookmakers:
+        print(_status_line("compare_model_vs_bookmakers", "SKIPPED", "use --run-bookmakers to enable"))
+    else:
+        try:
+            from src.evaluation import compare_model_vs_bookmakers
 
-# (tu as déjà ajouté ces imports)
-# from src.reporting import (
-#     export_gw_results,
-#     export_gbm_results_by_position,
-#     export_gbm_error_tables,
-# )
+            comp, mae, corr = compare_model_vs_bookmakers(
+                model="gw_seasonal_gbm",
+                test_season=args.season,
+                verbose=False,
+                )
 
-@app.command("export-gw-results")
-def export_gw_results_cmd(
-    season: str = typer.Option("2022/23", "--season", help='Held-out season for evaluation, e.g. "2022/23".'),
-    output_dir: str = typer.Option("results", "--output-dir", help="Output directory for metrics/figures/tables."),
-    with_position_breakdown: bool = typer.Option(
-        True, "--with-position-breakdown/--no-position-breakdown", help="Also export GBM metrics/figures by position."
-    ),
-    with_error_tables: bool = typer.Option(
-        True, "--with-error-tables/--no-error-tables", help="Also export top over/under-predicted tables for GBM."
-    ),
-) -> None:
-    """
-    Export evaluation metrics + figures to the results/ folder (pred vs actual, residuals, summary bars, etc.).
-    """
-    test_season = _norm_season_or_exit(season)
-    out_dir = Path(output_dir)
+            print(_status_line("bookmaker comparison", "DONE"))
+            
+            # --------------------------------------------------------------
+            # Readable statistics summary 
+            # --------------------------------------------------------------
+            print("-" * 80)
+            print("Statistics summary")
+            print("-" * 80)
+            print(f"MAE  : {mae:.3f}")
+            print(f"Corr : {corr:.3f}")
+            print(f"n    : {len(comp)}")
+            print("-" * 80)
 
-    try:
-        export_gw_results(test_season=test_season, output_dir=out_dir)
-    except Exception as e:
-        typer.echo(f"ERROR: export failed: {e}")
-        raise typer.Exit(code=1)
+            # --------------------------------------------------------------
+            # Worst / Best predictions (tables, direct from comp)
+            # --------------------------------------------------------------
+            df = comp.copy()
+            # --------------------------------------------------------------
+            # Pretty column names (LOCAL: display + export only)
+            # --------------------------------------------------------------
+            pretty_rename = {
+                "pnorm_home_win": "p_home_win_b365",
+                "p_model_home_win": "p_home_win_model",
+            }
 
-    typer.echo(f"Exported metrics/figures to: {out_dir.resolve()}")
+
+            # Safety (should already be numeric, but keep robust)
+            df["pnorm_home_win"] = pd.to_numeric(df["pnorm_home_win"], errors="coerce")
+            df["p_model_home_win"] = pd.to_numeric(df["p_model_home_win"], errors="coerce")
+            df["abs_error"] = pd.to_numeric(df["abs_error"], errors="coerce")
+
+            df = df.dropna(subset=["pnorm_home_win", "p_model_home_win", "abs_error"])
+
+            df["diff"] = df["p_model_home_win"] - df["pnorm_home_win"]
+
+            display_cols = [
+                "season",
+                "gameweek",
+                "home_team",
+                "away_team",
+                "pnorm_home_win",
+                "p_model_home_win",
+                "diff",
+                "abs_error",
+            ]
+
+            df_display = df[display_cols].rename(columns=pretty_rename)
+
+            worst5 = (
+                df_display.sort_values("abs_error", ascending=False)
+                        .head(5)
+                        .round(3)
+            )
+
+            best5 = (
+                df_display.sort_values("abs_error", ascending=True)
+                        .head(5)
+                        .round(3)
+            )
+
+            print("\nWorst 5 predictions (largest |Bet365 - model|)")
+            print("-" * 80)
+            print(worst5.to_string(index=False))
+
+            print("\nBest 5 predictions (smallest |Bet365 - model|)")
+            print("-" * 80)
+            print(best5.to_string(index=False))
 
 
+
+
+
+            out_path = (
+                output_dir
+                / "predictions"
+                / f"bookmakers_comp__{args.season.replace('/', '_')}.csv"
+            )
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            comp.to_csv(out_path, index=False)
+            print(_status_line("CSV export", "DONE", f"{out_path}"))
+
+        except Exception as e:
+            print(_status_line("bookmaker comparison", "WARNING", f"{type(e).__name__}: {e}"))
+
+    print("\n" + _hr())
+    print("DONE: main.py completed without blocking errors.")
+    print(_hr())
 
 
 if __name__ == "__main__":
-    app()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nInterrupted.")
+        sys.exit(130)
+    except Exception:
+        raise
 

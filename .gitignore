@@ -1,4 +1,7 @@
 data/processed/
 __pycache__/
 .pytest_cache/
-results/*.png
+
+# generated outputs
+results/
+*.tar.gz

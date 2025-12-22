@@ -103,7 +103,9 @@ def build_team_strength_table() -> pd.DataFrame:
 def compare_model_vs_bookmakers(
     model: str,
     test_season: str,
+    verbose: bool = True,
 ) -> Tuple[pd.DataFrame, float, float]:
+
     """
     Match-level comparison: model-implied home-win probability vs Bet365 probability.
 
@@ -241,7 +243,8 @@ def compare_model_vs_bookmakers(
     comp["pred_home_points"] = comp["pred_home_points"] ** gamma
     comp["pred_away_points"] = comp["pred_away_points"] ** gamma
 
-    print(f"[Gamma calibration] Using gamma = {gamma}, pre-logistic MAE={best_mae:.3f}")
+    if verbose:
+        print(f"[Gamma calibration] Using gamma = {gamma}, pre-logistic MAE={best_mae:.3f}")
 
     # ------------------------------------------------------
     # 8) Logistic calibration: strength_diff -> probability
@@ -269,13 +272,13 @@ def compare_model_vs_bookmakers(
     corr = float(comp["p_model_home_win"].corr(comp["pnorm_home_win"]))
 
     cols_to_keep = [
-        "season",
-        "gameweek",
-        "home_team",
-        "away_team",
-        "pnorm_home_win",
-        "p_model_home_win",
-        "abs_error",
+    "season",
+    "gameweek",
+    "home_team",
+    "away_team",
+    "pnorm_home_win",
+    "p_model_home_win",
+    "abs_error",
     ]
 
     comp = (
@@ -287,33 +290,44 @@ def compare_model_vs_bookmakers(
     return comp, mae, corr
 
 
-def print_example_matches(comp: pd.DataFrame, n: int = 10) -> None:
+
+
+def print_example_matches(comp: pd.DataFrame, n: int = 5) -> None:
     """
-    Print a few sample matches, sorted by largest absolute discrepancy
-    between the model and Bet365.
+    Print example matches:
+    - n worst predictions (largest absolute error)
+    - n best predictions (smallest absolute error)
     """
     if comp.empty:
         print("No matches to display.")
         return
 
-    examples = comp.sort_values("abs_error", ascending=False).head(n)
+    comp = comp.sort_values("abs_error")
 
-    print("Example matches (sorted by largest absolute disagreement):")
-    print("-" * 80)
-    for _, row in examples.iterrows():
-        season = row["season"]
-        gw = int(row["gameweek"])
-        home = row["home_team"]
-        away = row["away_team"]
-        p_bookie = row["pnorm_home_win"]
-        p_model = row["p_model_home_win"]
-        diff = p_model - p_bookie
+    best = comp.head(n)
+    worst = comp.tail(n).sort_values("abs_error", ascending=False)
 
-        print(f"{season} GW{gw}: {home} vs {away}")
-        print(f"  Bet365 home-win prob : {p_bookie:.3f}")
-        print(f"  Model home-win prob  : {p_model:.3f}")
-        print(f"  Difference (model - Bet365): {diff:+.3f}")
-        print()
+    def _print_block(df: pd.DataFrame, title: str) -> None:
+        print(title)
+        print("-" * 80)
+        for _, row in df.iterrows():
+            season = row["season"]
+            gw = int(row["gameweek"])
+            home = row["home_team"]
+            away = row["away_team"]
+            p_bookie = row["pnorm_home_win"]
+            p_model = row["p_model_home_win"]
+            diff = p_model - p_bookie
+
+            print(f"{season} GW{gw}: {home} vs {away}")
+            print(f"  Bet365 home-win prob : {p_bookie:.3f}")
+            print(f"  Model home-win prob  : {p_model:.3f}")
+            print(f"  Difference (model - Bet365): {diff:+.3f}")
+            print()
+
+    _print_block(worst, f"Example matches – WORST {n} predictions")
+    _print_block(best, f"Example matches – BEST {n} predictions")
+
 
 
 # =============================================================================

@@ -46,8 +46,14 @@ def _ensure_dir(path: Path) -> None:
 def _save_fig(fig, path: Path) -> None:
     _ensure_dir(path.parent)
     fig.tight_layout()
-    fig.savefig(path, dpi=200)
+    fig.savefig(
+        path,
+        dpi=120,
+        facecolor="white",
+        transparent=False,
+    )
     plt.close(fig)
+
 
 
 def _write_table_csv_md(df: pd.DataFrame, out_base: Path) -> None:
@@ -457,16 +463,13 @@ def export_sample_match_team_strength(
         if col in out_sample.columns:
             out_sample[col] = pd.to_numeric(out_sample[col], errors="coerce").round(4)
 
+
     # ------------------------------------------------------
     # 8) Output paths
     # ------------------------------------------------------
-    season_tag = str(test_season).replace("/", "_")
-    csv_path = predictions_dir / (
-        f"sample_match_team_strength__{season_tag}__gbm_seasonal_top{top_n_players}.csv"
-    )
-    md_path = predictions_dir / (
-        f"sample_match_team_strength__{season_tag}__gbm_seasonal_top{top_n_players}.md"
-    )
+    csv_path = predictions_dir / "h_team_strength_random_gw.csv"
+    md_path = predictions_dir / "h_team_strength_random_gw.md"
+
 
     # ------------------------------------------------------
     # 9) Write outputs
@@ -514,7 +517,7 @@ def export_gw_results(
     output_dir = Path(output_dir)
 
     metrics_dir = output_dir / "metrics"
-    figures_dir = output_dir / "figures" / "gw"
+    figures_dir = output_dir / "figures" 
     predictions_dir = output_dir / "predictions"
     tables_dir = output_dir / "tables"
 
@@ -783,13 +786,13 @@ def export_gw_results(
             # --------------------------------------------------
             # Write CSV (full columns)
             # --------------------------------------------------
-            pred_csv = predictions_dir / "sample10_random_players_random_gw__gbm_seasonal.csv"
+            pred_csv = predictions_dir / "10_random_gbm_predictions.csv"
             sample_df.to_csv(pred_csv, index=False)
 
             # --------------------------------------------------
             # Write Markdown (compact, one-line friendly)
             # --------------------------------------------------
-            pred_md = predictions_dir / "sample10_random_players_random_gw__gbm_seasonal.md"
+            pred_md = predictions_dir / "10_random_gbm_predictions.md"
 
             md_sample = sample_df.copy()
             md_sample = md_sample.rename(
@@ -824,7 +827,7 @@ def export_gw_results(
             pred_md.write_text("\n".join(md_lines_pred), encoding="utf-8")
 
         except Exception as e:
-            (predictions_dir / "sample10_random_players_random_gw__gbm_seasonal.ERROR.txt").write_text(
+            (predictions_dir / "10_random_gbm_predictions.ERROR.txt").write_text(
                 f"Failed to generate random sample predictions: {e}\n",
                 encoding="utf-8",
             )
