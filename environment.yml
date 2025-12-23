@@ -2,11 +2,15 @@ name: fpl-points-predictor
 
 dependencies:
   - python=3.10
-  - pandas
   - numpy
+  - pandas
   - scikit-learn
-  - typer
   - matplotlib
+  - typer
+  - pytest
+  - pytest-cov
   - pip
   - pip:
       - seaborn
+      - kagglehub
+

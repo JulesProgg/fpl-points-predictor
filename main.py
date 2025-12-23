@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 import os
 import sys
-import pandas as pd
 
 
 def _hr(n: int = 70) -> str:
@@ -27,61 +26,6 @@ def _status_line(label: str, status: str, details: str = "") -> str:
     tail = f" | {details}" if details else ""
     return f"   - {status}: {label}{tail}"
 
-
-def _df_to_string_one_line(df, cols: list[str] | None = None, float_round: int = 2) -> str:
-    """
-    Render a dataframe in a single compact line (records separated by " | ").
-    Intended for small tables (best-by-position, top3).
-    """
-    import pandas as pd
-
-    if df is None or len(df) == 0:
-        return ""
-
-    tmp = df.copy()
-    if cols is not None:
-        cols = [c for c in cols if c in tmp.columns]
-        tmp = tmp[cols]
-
-    # Round numeric columns for compactness
-    for c in tmp.columns:
-        if pd.api.types.is_numeric_dtype(tmp[c]):
-            tmp[c] = pd.to_numeric(tmp[c], errors="coerce").round(float_round)
-
-    # Convert each row to "col=value" chunks
-    parts: list[str] = []
-    for _, r in tmp.iterrows():
-        row_parts = []
-        for c in tmp.columns:
-            v = r.get(c, "")
-            row_parts.append(f"{c}={v}")
-        parts.append(", ".join(row_parts))
-    return " | ".join(parts)
-
-
-def _print_df(df, cols: list[str], one_line: bool = False, float_round: int = 2) -> None:
-    """
-    Print dataframe either as standard table or compact one-liner.
-    """
-    import pandas as pd
-
-    if df is None or len(df) == 0:
-        print("   (empty)")
-        return
-
-    show_cols = [c for c in cols if c in df.columns]
-    out = df.copy()
-
-    # Apply rounding (only to columns that exist)
-    for c in show_cols:
-        if c in out.columns and pd.api.types.is_numeric_dtype(out[c]):
-            out[c] = pd.to_numeric(out[c], errors="coerce").round(float_round)
-
-    if one_line:
-        s = _df_to_string_one_line(out, cols=show_cols, float_round=float_round)
-        print(f"   {s}")
-    else:
-        print(out[show_cols].to_string(index=False))
 
 
 def main() -> None:
@@ -155,7 +99,16 @@ def main() -> None:
     # High-level imports (stable public API)
     # ------------------------------------------------------------------
     from src import predict_gw_all_players
-    from src.reporting import export_gw_results, export_sample_match_team_strength
+
+    from src.reporting import (
+        export_gw_results,
+        export_sample_match_team_strength,
+        enrich_sample_match_summary,
+        console_print_prediction_demo,
+        summarize_bookmaker_comparison,
+        console_print_bookmaker_stats
+    )
+
     from src.data_loader import (
         PLAYER_GW_FILE,
         EPL_FIXTURES_FILE,
@@ -183,7 +136,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     # 1) Export GW results (metrics + figures + tables)
     # ------------------------------------------------------------------
-    print("\n1) Exporting GW results (metrics, figures, tables)")
+    print("\n1) Exporting GW results (figures, metrics, predictions, tables)")
     if args.skip_export:
         print(_status_line("export_gw_results", "SKIPPED", "--skip-export"))
     else:
@@ -198,7 +151,7 @@ def main() -> None:
                 _status_line(
                     "Outputs",
                     "INFO",
-                    f"{output_dir}/metrics, {output_dir}/figures, {output_dir}/tables, {output_dir}/predictions",
+                    f"{output_dir}/figures, {output_dir}/metrics, {output_dir}/predictions, {output_dir}/tables",
                 )
             )
         except Exception as e:
@@ -206,84 +159,16 @@ def main() -> None:
             raise
 
     # ------------------------------------------------------------------
-    # 2) Prediction demo (best buy per position) — runs on multiple GWs
+    # 2) Prediction demo — runs on 3 GWs
     # ------------------------------------------------------------------
-    print("\n2) Prediction demo: predict_gw_all_players")
+    print("\n2) 3 gameweeks predictions demo: predict_gw_all_players")
 
     if args.skip_predict:
         print(_status_line("predict_gw_all_players", "SKIPPED", "--skip-predict"))
     else:
         try:
-            SEP = "-" * 72  # separator line (same spirit as bookmaker output)
-            TABLE_COL_SPACE = {
-                "gameweek": 8,
-                "position": 8,
-                "name": 24,
-                "team": 22,
-                "predicted_points": 16,
-            }
+            SEP = "-" * 72
 
-            def _print_table_indented(
-                df: pd.DataFrame,
-                cols: list[str],
-                *,
-                indent: str = "   ",
-                float_round: int = 2,
-                col_space: dict[str, int] | None = None,
-            ) -> None:
-                """Print a fixed-width console table (headers + values aligned)."""
-                if df is None or len(df) == 0:
-                    print(indent + "(empty)")
-                    return
-
-                out = df.copy()
-                cols_existing = [c for c in cols if c in out.columns]
-                out = out[cols_existing].copy()
-
-                # Round numeric columns for display
-                for c in out.select_dtypes(include="number").columns:
-                    out[c] = pd.to_numeric(out[c], errors="coerce").round(float_round)
-
-                # Use provided widths (keep same variable name to avoid touching anything else)
-                W = col_space or TABLE_COL_SPACE
-
-                def _fit(text: object, w: int) -> str:
-                    s = "" if pd.isna(text) else str(text)
-                    if len(s) > w:
-                        return (s[: w - 1] + "…") if w >= 2 else s[:w]
-                    return s.ljust(w)
-
-                def _fit_right(text: object, w: int) -> str:
-                    s = "" if pd.isna(text) else str(text)
-                    if len(s) > w:
-                        return s[-w:]
-                    return s.rjust(w)
-
-                # Header (same widths as rows)
-                header_parts: list[str] = []
-                for c in cols_existing:
-                    w = int(W.get(c, max(len(c), 10)))
-                    if c == "predicted_points":
-                        header_parts.append(c.rjust(w))
-                    else:
-                        header_parts.append(c.ljust(w))
-                print(indent + " ".join(header_parts).rstrip())
-
-                # Rows
-                for _, r in out.iterrows():
-                    row_parts: list[str] = []
-                    for c in cols_existing:
-                        w = int(W.get(c, max(len(c), 10)))
-                        v = r[c]
-                        if c == "predicted_points":
-                            v = "" if pd.isna(v) else f"{float(v):.{float_round}f}"
-                            row_parts.append(_fit_right(v, w))
-                        else:
-                            row_parts.append(_fit(v, w))
-                    print(indent + " ".join(row_parts).rstrip())
-
-            # demo_gws must be defined right after argparse:
-            # demo_gws = [int(args.gw)] if args.gw is not None else [int(x) for x in args.gws]
             for gw in demo_gws:
                 print(f"\n{SEP}")
                 print(f"   GW {gw}")
@@ -302,63 +187,13 @@ def main() -> None:
                 if preds is None or len(preds) == 0:
                     continue
 
-                tmp = preds.copy()
-                tmp["predicted_points"] = pd.to_numeric(tmp["predicted_points"], errors="coerce")
-                tmp = tmp.dropna(subset=["predicted_points"])
-
-
-                # Enforce FPL position order everywhere (GK, DEF, MID, FWD)
-                POS_ORDER = ["GK", "DEF", "MID", "FWD"]
-                if "position" not in tmp.columns:
-                    print(_status_line("best-by-position", "WARNING", "'position' column missing"))
-                    continue
-                tmp["position"] = pd.Categorical(tmp["position"], categories=POS_ORDER, ordered=True)
-
-                # ----------------------------------------------------------
-                # Best buy per position (table)
-                # ----------------------------------------------------------
-                print("\n   Best buy per position:")
-
-                best_by_pos = (
-                    tmp.sort_values(["position", "predicted_points"], ascending=[True, False])
-                    .groupby("position", as_index=False, observed=True)
-                    .head(1)
-                    .sort_values("position")
-                    .reset_index(drop=True)
-                )
-
-                _print_table_indented(
-                    best_by_pos,
-                    cols=["gameweek", "position", "name", "team", "predicted_points"],
-                    indent="   ",
-                    float_round=2,
-                    col_space=TABLE_COL_SPACE,
-                )
-
-                # ------------------------------------------------------
-                # Top 3 options per position (table)
-                # ------------------------------------------------------
-                print("\n   Top 3 options per position:")
-
-                top3_by_pos = (
-                    tmp.sort_values(["position", "predicted_points"], ascending=[True, False])
-                    .groupby("position", as_index=False, observed=True)
-                    .head(3)
-                    .sort_values(["position", "predicted_points"], ascending=[True, False])
-                    .reset_index(drop=True)
-                    )
-
-                _print_table_indented(
-                    top3_by_pos,
-                    cols=["gameweek", "position", "name", "team", "predicted_points"],
-                    indent="   ",
-                    float_round=2,
-                    col_space=TABLE_COL_SPACE,
-                )
+                # All presentation logic lives in src.reporting now
+                console_print_prediction_demo(preds, one_line=args.one_line, indent="   ")
 
         except Exception as e:
             print(_status_line("prediction demo", "ERROR", f"{type(e).__name__}: {e}"))
             raise
+
 
     # ------------------------------------------------------------------
     # 3) Sample match team-strength export (optional, non-blocking)
@@ -376,88 +211,25 @@ def main() -> None:
                 seed=42,
             )
 
-            # --------------------------------------------------------------
-            # NEW: Add match-level summary columns (interpretable output)
-            # --------------------------------------------------------------
-            sample = sample.copy()
-
-            # Expected base columns (adapt if your exporter uses different names)
-            col_candidates = {
-                "home_team": ["home_team", "team_home", "home"],
-                "away_team": ["away_team", "team_away", "away"],
-                "home_strength": ["home_strength", "strength_home", "team_strength_home"],
-                "away_strength": ["away_strength", "strength_away", "team_strength_away"],
-            }
-
-            def _first_existing(df, names: list[str]) -> str | None:
-                for n in names:
-                    if n in df.columns:
-                        return n
-                return None
-
-            c_home_team = _first_existing(sample, col_candidates["home_team"])
-            c_away_team = _first_existing(sample, col_candidates["away_team"])
-            c_home_str = _first_existing(sample, col_candidates["home_strength"])
-            c_away_str = _first_existing(sample, col_candidates["away_strength"])
-
-            missing = [k for k, c in {
-                "home_team": c_home_team,
-                "away_team": c_away_team,
-                "home_strength": c_home_str,
-                "away_strength": c_away_str,
-            }.items() if c is None]
-
-            if missing:
-                raise KeyError(
-                    "Sample match summary cannot be computed because "
-                    f"these required columns are missing in returned dataframe: {missing}. "
-                    f"Available columns: {list(sample.columns)}"
-                )
-
-            # Normalize to canonical column names
-            rename_map = {
-                c_home_team: "home_team",
-                c_away_team: "away_team",
-                c_home_str: "home_strength",
-                c_away_str: "away_strength",
-            }
-            # Avoid renaming collisions
-            rename_map = {k: v for k, v in rename_map.items() if k != v}
-            if rename_map:
-                sample = sample.rename(columns=rename_map)
-
-            # Compute summary metrics
-            sample["delta_strength"] = (sample["home_strength"] - sample["away_strength"]).abs()
-
-            def _favorite(row) -> str:
-                if row["home_strength"] > row["away_strength"]:
-                    return row["home_team"]
-                if row["away_strength"] > row["home_strength"]:
-                    return row["away_team"]
-                return "DRAW"
-
-
-            sample["favorite"] = sample.apply(_favorite, axis=1)
+            sample = enrich_sample_match_summary(sample)
 
             print(_status_line("sample match team strength exported", "DONE", f"n={len(sample)}"))
-            print(_status_line("Output", "INFO", f"{output_dir}/predictions/"))
+            print(_status_line("CSV output", "INFO", f"{output_dir}/predictions/"))
 
-            # Small terminal preview (top 10 matches)
             preview_cols = ["home_team", "away_team", "home_strength", "away_strength", "delta_strength", "favorite"]
+            preview_cols = [c for c in preview_cols if c in sample.columns]
             print("\n   Match summary preview:")
             print(sample[preview_cols].to_string(index=False))
 
-            # Export enriched sample (overwrites / adds a new file)
             out_path = Path(output_dir) / "predictions" / "sample_match_team_strength_summary.csv"
             out_path.parent.mkdir(parents=True, exist_ok=True)
             sample.to_csv(out_path, index=False)
             print(_status_line("Summary CSV", "DONE", str(out_path)))
 
-
-
         except Exception as e:
             # Non-blocking: depends on fixtures/odds availability
             print(_status_line("sample match export", "WARNING", f"{type(e).__name__}: {e}"))
+
 
 
     # ------------------------------------------------------------------
@@ -477,64 +249,10 @@ def main() -> None:
                 )
 
             print(_status_line("bookmaker comparison", "DONE"))
+
+            console_print_bookmaker_stats(mae=mae, corr=corr, n=len(comp))
             
-            # --------------------------------------------------------------
-            # Readable statistics summary 
-            # --------------------------------------------------------------
-            print("-" * 80)
-            print("Statistics summary")
-            print("-" * 80)
-            print(f"MAE  : {mae:.3f}")
-            print(f"Corr : {corr:.3f}")
-            print(f"n    : {len(comp)}")
-            print("-" * 80)
-
-            # --------------------------------------------------------------
-            # Worst / Best predictions (tables, direct from comp)
-            # --------------------------------------------------------------
-            df = comp.copy()
-            # --------------------------------------------------------------
-            # Pretty column names (LOCAL: display + export only)
-            # --------------------------------------------------------------
-            pretty_rename = {
-                "pnorm_home_win": "p_home_win_b365",
-                "p_model_home_win": "p_home_win_model",
-            }
-
-
-            # Safety (should already be numeric, but keep robust)
-            df["pnorm_home_win"] = pd.to_numeric(df["pnorm_home_win"], errors="coerce")
-            df["p_model_home_win"] = pd.to_numeric(df["p_model_home_win"], errors="coerce")
-            df["abs_error"] = pd.to_numeric(df["abs_error"], errors="coerce")
-
-            df = df.dropna(subset=["pnorm_home_win", "p_model_home_win", "abs_error"])
-
-            df["diff"] = df["p_model_home_win"] - df["pnorm_home_win"]
-
-            display_cols = [
-                "season",
-                "gameweek",
-                "home_team",
-                "away_team",
-                "pnorm_home_win",
-                "p_model_home_win",
-                "diff",
-                "abs_error",
-            ]
-
-            df_display = df[display_cols].rename(columns=pretty_rename)
-
-            worst5 = (
-                df_display.sort_values("abs_error", ascending=False)
-                        .head(5)
-                        .round(3)
-            )
-
-            best5 = (
-                df_display.sort_values("abs_error", ascending=True)
-                        .head(5)
-                        .round(3)
-            )
+            worst5, best5 = summarize_bookmaker_comparison(comp)
 
             print("\nWorst 5 predictions (largest |Bet365 - model|)")
             print("-" * 80)
@@ -543,9 +261,6 @@ def main() -> None:
             print("\nBest 5 predictions (smallest |Bet365 - model|)")
             print("-" * 80)
             print(best5.to_string(index=False))
-
-
-
 
 
             out_path = (

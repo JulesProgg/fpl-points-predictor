@@ -292,44 +292,6 @@ def compare_model_vs_bookmakers(
 
 
 
-def print_example_matches(comp: pd.DataFrame, n: int = 5) -> None:
-    """
-    Print example matches:
-    - n worst predictions (largest absolute error)
-    - n best predictions (smallest absolute error)
-    """
-    if comp.empty:
-        print("No matches to display.")
-        return
-
-    comp = comp.sort_values("abs_error")
-
-    best = comp.head(n)
-    worst = comp.tail(n).sort_values("abs_error", ascending=False)
-
-    def _print_block(df: pd.DataFrame, title: str) -> None:
-        print(title)
-        print("-" * 80)
-        for _, row in df.iterrows():
-            season = row["season"]
-            gw = int(row["gameweek"])
-            home = row["home_team"]
-            away = row["away_team"]
-            p_bookie = row["pnorm_home_win"]
-            p_model = row["p_model_home_win"]
-            diff = p_model - p_bookie
-
-            print(f"{season} GW{gw}: {home} vs {away}")
-            print(f"  Bet365 home-win prob : {p_bookie:.3f}")
-            print(f"  Model home-win prob  : {p_model:.3f}")
-            print(f"  Difference (model - Bet365): {diff:+.3f}")
-            print()
-
-    _print_block(worst, f"Example matches – WORST {n} predictions")
-    _print_block(best, f"Example matches – BEST {n} predictions")
-
-
-
 # =============================================================================
 # GAMEWEEK-LEVEL MODEL EVALUATION
 # =============================================================================
