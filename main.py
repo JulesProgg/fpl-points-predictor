@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import os
 import sys
+import pandas as pd
 
 
 def _hr(n: int = 70) -> str:
@@ -213,9 +214,6 @@ def main() -> None:
         print(_status_line("predict_gw_all_players", "SKIPPED", "--skip-predict"))
     else:
         try:
-            import pandas as pd
-            import numpy as np
-
             SEP = "-" * 72  # separator line (same spirit as bookmaker output)
             TABLE_COL_SPACE = {
                 "gameweek": 8,
@@ -308,6 +306,7 @@ def main() -> None:
                 tmp["predicted_points"] = pd.to_numeric(tmp["predicted_points"], errors="coerce")
                 tmp = tmp.dropna(subset=["predicted_points"])
 
+
                 # Enforce FPL position order everywhere (GK, DEF, MID, FWD)
                 POS_ORDER = ["GK", "DEF", "MID", "FWD"]
                 if "position" not in tmp.columns:
@@ -376,8 +375,85 @@ def main() -> None:
                 sample_n_matches=10,
                 seed=42,
             )
+
+            # --------------------------------------------------------------
+            # NEW: Add match-level summary columns (interpretable output)
+            # --------------------------------------------------------------
+            sample = sample.copy()
+
+            # Expected base columns (adapt if your exporter uses different names)
+            col_candidates = {
+                "home_team": ["home_team", "team_home", "home"],
+                "away_team": ["away_team", "team_away", "away"],
+                "home_strength": ["home_strength", "strength_home", "team_strength_home"],
+                "away_strength": ["away_strength", "strength_away", "team_strength_away"],
+            }
+
+            def _first_existing(df, names: list[str]) -> str | None:
+                for n in names:
+                    if n in df.columns:
+                        return n
+                return None
+
+            c_home_team = _first_existing(sample, col_candidates["home_team"])
+            c_away_team = _first_existing(sample, col_candidates["away_team"])
+            c_home_str = _first_existing(sample, col_candidates["home_strength"])
+            c_away_str = _first_existing(sample, col_candidates["away_strength"])
+
+            missing = [k for k, c in {
+                "home_team": c_home_team,
+                "away_team": c_away_team,
+                "home_strength": c_home_str,
+                "away_strength": c_away_str,
+            }.items() if c is None]
+
+            if missing:
+                raise KeyError(
+                    "Sample match summary cannot be computed because "
+                    f"these required columns are missing in returned dataframe: {missing}. "
+                    f"Available columns: {list(sample.columns)}"
+                )
+
+            # Normalize to canonical column names
+            rename_map = {
+                c_home_team: "home_team",
+                c_away_team: "away_team",
+                c_home_str: "home_strength",
+                c_away_str: "away_strength",
+            }
+            # Avoid renaming collisions
+            rename_map = {k: v for k, v in rename_map.items() if k != v}
+            if rename_map:
+                sample = sample.rename(columns=rename_map)
+
+            # Compute summary metrics
+            sample["delta_strength"] = (sample["home_strength"] - sample["away_strength"]).abs()
+
+            def _favorite(row) -> str:
+                if row["home_strength"] > row["away_strength"]:
+                    return row["home_team"]
+                if row["away_strength"] > row["home_strength"]:
+                    return row["away_team"]
+                return "DRAW"
+
+
+            sample["favorite"] = sample.apply(_favorite, axis=1)
+
             print(_status_line("sample match team strength exported", "DONE", f"n={len(sample)}"))
             print(_status_line("Output", "INFO", f"{output_dir}/predictions/"))
+
+            # Small terminal preview (top 10 matches)
+            preview_cols = ["home_team", "away_team", "home_strength", "away_strength", "delta_strength", "favorite"]
+            print("\n   Match summary preview:")
+            print(sample[preview_cols].to_string(index=False))
+
+            # Export enriched sample (overwrites / adds a new file)
+            out_path = Path(output_dir) / "predictions" / "sample_match_team_strength_summary.csv"
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            sample.to_csv(out_path, index=False)
+            print(_status_line("Summary CSV", "DONE", str(out_path)))
+
+
 
         except Exception as e:
             # Non-blocking: depends on fixtures/odds availability

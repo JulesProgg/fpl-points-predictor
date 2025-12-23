@@ -339,6 +339,57 @@ def predict_gw_all_players(
 
     minute_cols = [c for c in test_df.columns if c.startswith("minutes_lag_")]
 
+    # ------------------------------------------------------------------
+    # Double gameweek (GAME SPECIFICITY)  — if the dataset is match-level, aggregate to
+    # 1 row per (player_id, season, gameweek) by summing predicted_points.
+    # This ensures DGW players get total predicted points across matches.
+    # ------------------------------------------------------------------
+    key = ["player_id", "season", "gameweek"]
+
+    if test_df.duplicated(subset=key).any():
+        minute_cols = [c for c in test_df.columns if c.startswith("minutes_lag_")]
+
+        # Define aggregation rules (safe defaults)
+        agg: dict[str, str | callable] = {}
+
+        # Stable identity columns (keep first)
+        for c in ["name", "team", "position"]:
+            if c in test_df.columns:
+                agg[c] = "first"
+
+        # Sum predictions across matches in the same GW
+        agg["predicted_points"] = "sum"
+
+        # If ground-truth exists, sum it too (DGW actual total)
+        if "points" in test_df.columns:
+            agg["points"] = "sum"
+        if "actual_points" in test_df.columns:
+            agg["actual_points"] = "sum"
+        if "total_points" in test_df.columns:
+            agg["total_points"] = "sum"
+
+        # Minutes (if present as match-level) should sum; lag minutes should be identical -> first
+        if "minutes" in test_df.columns:
+            agg["minutes"] = "sum"
+        for c in minute_cols:
+            agg[c] = "first"
+
+        # Keep lag/feature columns (they should be identical across DGW matches for same player-GW)
+        # We keep them as first if they exist.
+        for c in feature_cols:
+            if c in test_df.columns and c not in agg:
+                agg[c] = "first"
+
+        # Any other non-key columns not yet handled: keep first (prevents drop)
+        for c in test_df.columns:
+            if c in key:
+                continue
+            if c not in agg:
+                agg[c] = "first"
+
+        test_df = test_df.groupby(key, as_index=False).agg(agg)
+
+
     return test_df[cols_out + minute_cols].sort_values(
         ["season", "gameweek", "team", "name"]
     )
