@@ -342,4 +342,3 @@ def predict_gw_all_players(
     return test_df[cols_out + minute_cols].sort_values(
         ["season", "gameweek", "team", "name"]
     )
-
