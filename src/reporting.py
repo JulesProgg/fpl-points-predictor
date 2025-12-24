@@ -1366,17 +1366,17 @@ def export_tables_results(
 
 
     # ------------------------------------------------------------------
-    # 1b) Top 10 players to have for 3 manually selected gameweeks
-    #     (GW 5, 20, 35) – MD output split by GW
+    # 1b) Top 10 players to have for ONE demo gameweek 
+    #     Output: CSV + Markdown (single table)
     # ------------------------------------------------------------------
 
-    selected_gws = [5, 20, 35]
+    selected_gw = 21 #CHANGE HERE IF YOU WANT TO TEST ANOTHER GAMEWEEK
 
     if c_gw is None or c_gw not in df0.columns:
-        raise KeyError("top10_players_for3gw requires a gameweek column (gameweek/gw/round).")
+        raise KeyError("top10_players_demo_gw requires a gameweek column (gameweek/gw/round).")
 
     if "predicted_points" not in df0.columns:
-        raise KeyError("top10_players_for3gw requires 'predicted_points' column.")
+        raise KeyError("top10_players_demo_gw requires 'predicted_points' column.")
 
     # --- Prepare base slice with numeric GW + predicted_points
     candidates = df0.copy()
@@ -1385,29 +1385,22 @@ def export_tables_results(
     candidates = candidates.dropna(subset=[c_gw, "predicted_points"]).copy()
     candidates[c_gw] = candidates[c_gw].astype(int)
 
-    # keep only requested gameweeks that exist
     available_gws = set(int(x) for x in candidates[c_gw].unique())
-    used_gws = [int(g) for g in selected_gws if int(g) in available_gws]
-    if len(used_gws) == 0:
+    if int(selected_gw) not in available_gws:
         raise ValueError(
-            f"top10_players_for3gw: none of the requested gameweeks exist in data: {selected_gws}"
+            f"top10_players_demo_gw: requested GW {selected_gw} not found in data. "
+            f"Available sample: {sorted(list(available_gws))[:10]}..."
         )
 
-    # --- Top 10 per selected GW
-    top_frames = []
-    for gw in used_gws:
-        sub = candidates[candidates[c_gw] == int(gw)].copy()
-        sub = (
-            sub.dropna(subset=["predicted_points"])
-            .sort_values(by="predicted_points", ascending=False)
-            .head(10)
-            .copy()
-        )
-        top_frames.append(sub)
+    # --- Top 10 for the selected GW
+    top_gw = (
+        candidates[candidates[c_gw] == int(selected_gw)]
+        .sort_values(by="predicted_points", ascending=False)
+        .head(10)
+        .copy()
+    )
 
-    top_gw = pd.concat(top_frames, ignore_index=True)
-
-    # --- Add opponent + venue from fixtures for those selected GWs
+    # --- Add opponent + venue from fixtures for this GW
     try:
         fixtures = load_fixtures().copy()
 
@@ -1423,7 +1416,7 @@ def export_tables_results(
                 fixtures[fx_season] = fixtures[fx_season].astype(str)
                 fixtures = fixtures[fixtures[fx_season] == str(test_season)].copy()
 
-            fixtures = fixtures[fixtures[fx_gw].isin([int(x) for x in used_gws])].copy()
+            fixtures = fixtures[fixtures[fx_gw] == int(selected_gw)].copy()
 
             team_to_opp = {}
             team_to_venue = {}
@@ -1499,13 +1492,14 @@ def export_tables_results(
         if col in top_gw_out.columns:
             top_gw_out[col] = pd.to_numeric(top_gw_out[col], errors="coerce").round(2)
 
-    # Sort for nicer display: by gameweek then predicted_points desc
-    if "gameweek" in top_gw_out.columns and "predicted_points" in top_gw_out.columns:
-        top_gw_out = top_gw_out.sort_values(
-            ["gameweek", "predicted_points"], ascending=[True, False]
-        ).reset_index(drop=True)
+    # Sort for nicer display
+    if "predicted_points" in top_gw_out.columns:
+        # (GW is constant anyway, but keeps determinism)
+        sort_cols = [c for c in ["gameweek", "predicted_points"] if c in top_gw_out.columns]
+        asc = [True, False] if sort_cols == ["gameweek", "predicted_points"] else [False]
+        top_gw_out = top_gw_out.sort_values(sort_cols, ascending=asc).reset_index(drop=True)
 
-    # purpose: readability (light truncation)
+    # Light truncation for readability
     def _truncate_name(s: object, n: int = 18) -> str:
         if pd.isna(s):
             return ""
@@ -1515,17 +1509,15 @@ def export_tables_results(
     if "name" in top_gw_out.columns:
         top_gw_out["name"] = top_gw_out["name"].map(_truncate_name)
 
-    # --- Write CSV normally (unchanged behavior)
-    out_base = tables_dir / "top10_players_for3gw"
+    # --- Write CSV + Markdown (single-table output)
+    out_base = tables_dir / "top10_players_demo_gw"
     _write_table_csv_md(top_gw_out, out_base)
 
-    # --- Overwrite .md with a GW-split rendering (same columns, clearer separation)
+    # Overwrite .md with a single clean table (no GW-splitting)
     try:
         md_lines: list[str] = []
-        md_lines.append(f"# Top 10 players for 3 fixed gameweeks – {test_season}\n")
-        md_lines.append(f"Gameweeks: {', '.join(str(x) for x in used_gws)}\n")
+        md_lines.append(f"# Top 10 players – demo GW{selected_gw} ({test_season})\n")
 
-        # Use the same MD formatting rules as _write_table_csv_md (compact headers, truncation, numeric formatting)
         md_df = top_gw_out.copy().rename(
             columns={
                 "player_id": "pid",
@@ -1537,7 +1529,6 @@ def export_tables_results(
 
         for c in ["team", "opponent"]:
             if c in md_df.columns:
-                # same compact mapping as in _write_table_csv_md
                 repl = {
                     "Brighton & Hove Albion": "Brighton",
                     "Tottenham Hotspur": "Spurs",
@@ -1559,19 +1550,11 @@ def export_tables_results(
                     lambda x: f"{x:.2f}" if pd.notna(x) else ""
                 )
 
-        for gw in used_gws:
-            md_lines.append(f"## GW{gw}\n")
-            block = md_df[md_df["gw"] == int(gw)].copy()
-            # on retire la colonne gw dans chaque sous-table (séparation par header)
-            if "gw" in block.columns:
-                block = block.drop(columns=["gw"])
-            md_lines.append(block.to_markdown(index=False, tablefmt="github") + "\n")
-
+        md_lines.append(md_df.to_markdown(index=False, tablefmt="github") + "\n")
         out_base.with_suffix(".md").write_text("\n".join(md_lines), encoding="utf-8")
-
     except Exception:
-        # if anything goes wrong, keep the default md generated by _write_table_csv_md
         pass
+
 
 
     # ------------------------------------------------------------------

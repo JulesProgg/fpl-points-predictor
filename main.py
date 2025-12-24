@@ -45,8 +45,8 @@ def main() -> None:
         "--gws",
         type=int,
         nargs="+",
-        default=[5, 20, 35],
-        help="Gameweeks used for the prediction demo (default: 5 20 35)",
+        default=[12],
+        help="Gameweek used for the prediction demo (default: 27)",
     )
 
     parser.add_argument("--output-dir", default="results", help="Output directory (default: results/)")
@@ -80,7 +80,7 @@ def main() -> None:
     )
 
     args = parser.parse_args()
-    demo_gws = [int(args.gw)] if args.gw is not None else [int(x) for x in args.gws]
+    demo_gws = [21] # CHANGE HERE IF YOU WANT TO HAVE ANOTHER DEMO GAMEWEEK
 
 
     root = _set_project_root()
@@ -91,7 +91,7 @@ def main() -> None:
         print("FPL Points Predictor — main.py")
         print(f"Project root : {root}")
         print(f"Test season  : {args.season}")
-        print(f"Demo GWs     : {demo_gws}")
+        print(f"Demo GW     : {demo_gws}")
         print(f"Output dir   : {output_dir.resolve()}")
         print(_hr())
 
@@ -159,9 +159,9 @@ def main() -> None:
             raise
 
     # ------------------------------------------------------------------
-    # 2) Prediction demo — runs on 3 GWs
+    # 2) Prediction demo on a choosen gw
     # ------------------------------------------------------------------
-    print("\n2) 3 gameweeks predictions demo: predict_gw_all_players")
+    print("\n2) gameweek predictions demo: predict_gw_all_players")
 
     if args.skip_predict:
         print(_status_line("predict_gw_all_players", "SKIPPED", "--skip-predict"))
@@ -174,11 +174,13 @@ def main() -> None:
                 print(f"   GW {gw}")
                 print(f"{SEP}")
 
-                preds = predict_gw_all_players(
-                    model="gw_seasonal_gbm",
+                from src.evaluation import get_gw_predictions_from_evaluation
+
+                preds = get_gw_predictions_from_evaluation(
                     test_season=args.season,
                     gameweek=gw,
                 )
+
 
                 n_preds = 0 if preds is None else len(preds)
                 print(_status_line("predictions generated", "DONE", f"n={n_preds}"))

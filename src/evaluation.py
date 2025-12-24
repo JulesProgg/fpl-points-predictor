@@ -710,3 +710,40 @@ def get_test_predictions_seasonal_gbm_gw(
 
     return out.reset_index(drop=True)
 
+
+def get_gw_predictions_from_evaluation(
+    *,
+    test_season: str,
+    gameweek: int,
+) -> pd.DataFrame:
+    """
+    Public helper for demo / reporting.
+    Returns evaluation-pipeline predictions filtered to a single gameweek,
+    with stable column names expected by reporting utilities.
+    """
+    import pandas as pd
+
+    df = get_test_predictions_seasonal_gbm_gw(test_season=test_season).copy()
+
+    # Season filter (defensive)
+    if "season" in df.columns:
+        df["season"] = df["season"].astype(str)
+        df = df[df["season"] == str(test_season)].copy()
+
+    # Resolve GW column
+    gw_col = "gameweek" if "gameweek" in df.columns else (
+        "gw" if "gw" in df.columns else None
+    )
+    if gw_col is None:
+        raise KeyError("Evaluation predictions have no gameweek column.")
+
+    df[gw_col] = pd.to_numeric(df[gw_col], errors="coerce")
+    df = df[df[gw_col] == int(gameweek)].copy()
+
+    # Canonical name expected downstream
+    if gw_col != "gameweek":
+        df = df.rename(columns={gw_col: "gameweek"})
+
+    return df.reset_index(drop=True)
+
+
