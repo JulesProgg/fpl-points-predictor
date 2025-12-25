@@ -81,6 +81,10 @@ fpl-points-predictor/
 ├── main.py                 # Lightweight orchestration script
 ├── requirements.txt
 ├── README.md
+├── download_data_instructions.md
+├── report/
+│   ├── project_report_final_version.pdf/ 
+├── pyproject.toml
 └── PROPOSAL.md
 
 
