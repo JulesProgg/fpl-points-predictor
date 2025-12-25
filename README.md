@@ -10,20 +10,36 @@ To what extent are point predictions for a game such as Fantasy Premier League (
 
 
 
-# SETUP :
+# SETUP
 
-1. Clone the repository : 
-git clone <repository-url>
+1. Clone the repository:
+
+git clone https://github.com/JulesProgg/fpl-points-predictor.git
 cd fpl-points-predictor
 
+
 2. Create and activate a Python environment : 
-conda create -n fpl python=3.10
+conda env create -f environment.yml
 conda activate fpl
 
-3. Install dependencies : 
-pip install -r requirements.txt
 
 The project has been developed and tested in the Nuvolos environment used at HEC Lausanne, but it is fully compatible with a standard local setup.
+
+3. The project relies on two raw datasets:
+
+*FPL player gameweek data*
+This dataset is automatically downloaded from Kaggle using the provided pipeline (`build_player_gameweeks_raw_from_kaggle`) and converted into: data/raw/player_gameweeks_raw.csv
+
+
+*Bet365 betting odds dataset* 
+The file data/raw/oddsdataset.csv is sourced externally and must be provided manually.  
+Due to licensing constraints, this dataset is not downloaded automatically.
+It is used as input to the odds processing pipeline, which produces a cleaned
+and standardised dataset under `data/processed/`. 
+
+All processed datasets are generated deterministically from these raw inputs.
+
+*** more information in download_data_instructions.md ***
 
 
 
