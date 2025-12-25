@@ -170,83 +170,118 @@ Across these visual diagnostics, the gradient boosting model consistently shows 
 
 ![Figure 2: Predictions vs actual points](figures/gbm_seasonal_pred_vs_actual.png)
 
-The predicted-versus-actual plot shows a clear positive relationship between predicted and realised Fantasy Premier League points, indicating that the model captures overall performance trends. However, predictions are compressed within a narrow range and systematically underpredict extreme outcomes, as illustrated by the regression line lying below the 45-degree reference line. This behaviour reflects a regression-to-the-mean effect and highlights that the model is more effective for ranking players than for accurately predicting exceptional performances.
+The predicted-versus-actual scatter plot highlights a clear positive relationship between model predictions and realised Fantasy Premier League points, indicating that the model captures the overall ordering of player performances. Most observations lie within a relatively narrow prediction range, revealing a strong compression effect. While this behaviour limits the model’s ability to reproduce extreme outcomes, it contributes to stable rankings across players.
+The systematic underprediction of high realised scores, reflected by the regression line lying below the 45-degree reference, is characteristic of a regression-to-the-mean effect. This suggests that the model prioritises robustness and ranking consistency over exact point forecasts, which is desirable in a decision-making context such as Fantasy Premier League team selection.
 
 
 ![Figure 3: Residuals with gbm](figures/gbm_seasonal_residuals.png)
 
 ![Figure 4: Residuals with linear (lag 5 features)](figures/linear_anytime_lag5_residuals.png)
 
-The highest concentration of residuals is observed in the interval [0.02; 0.47] for the best-performing model (gradient boosting), while for the weakest-performing model (linear regression with lag-5 features), the highest concentration lies in the interval [0.40; 0.88]. This shift towards a narrower and more central residual interval with gbm indicates a clear improvement in predictive accuracy across models.
-
-It is nevertheless worth noting that these high-density regions are consistently located slightly above zero. This suggests the presence of a small positive bias, which appears to diminish as model complexity increases but is unlikely to be completely eliminated, reflecting the intrinsic uncertainty and stochasticity of football performance outcomes.
+Figures 3 and 4 compare the residual distributions of the gradient boosting model and the linear regression model with lag-5 features, highlighting how model complexity affects the magnitude and concentration of prediction errors.
+For the gradient boosting model (Figure 3), residuals are strongly concentrated within a narrow interval, with the highest density observed between 0.02 and 0.47 points. This tight clustering indicates that, for the majority of observations, prediction errors remain small and centred close to zero, reflecting effective calibration across typical Fantasy Premier League outcomes. The relatively limited dispersion suggests improved robustness, particularly for players with stable playing time and consistent roles.
+In contrast, the linear regression model (Figure 4) exhibits a substantially wider residual distribution. Its highest-density region lies between 0.40 and 0.88 points, indicating more frequent and larger deviations between predicted and realised scores. This shift toward higher residual values reflects systematic underestimation of realised points, especially for above-average performances, and highlights the difficulty of linear specifications in capturing non-linear relationships and interaction effects present in player performance dynamics.
+While both models display residual distributions centred slightly above zero, the magnitude of this positive bias is markedly reduced for the gradient boosting model. Overall, the comparison demonstrates that increased model flexibility leads to a clearer contraction of residuals toward smaller errors, resulting in more stable and reliable point predictions.
 
 
 ![Figure 5: 10 random player points predictions with gbm](predictions/10_random_gbm_predictions.png)
 
-Several players receive the same very low predicted score (0.15 points). These cases most likely correspond to players with little or no recent playing time, for whom the prediction mainly reflects the probability of appearing in the match rather than expected on-field contribution.
-Conversely, the player with a high realized score in this sample (Bruno Fernandes) is assigned a substantially higher predicted value, which is a positive signal indicating that the model correctly identifies high-impact player profiles.
-
 ![Figure 6: Best player of 10 random gameweeks](tables/best_player_random_gw.png)
 
-The table shows that the model assigns predicted scores clustered between 4.3 and 5.6 points, reflecting comparable expected contributions among selected players. In many cases, realized points are of the same order of magnitude (e.g. Ødegaard: 5.37 vs 5, Trippier: 4.32 vs 6, Martínez: 5.37 vs 7), indicating reasonable calibration for typical outcomes.
-Extreme performances remain difficult to predict, as illustrated by Haaland (5.64 predicted vs 23 actual), but the model still assigns him the highest predicted score, correctly identifying his exceptional scoring potential despite unavoidable match-level variance.
+![Figure 7: Top 10 player of a single gameweek](tables/top10_player_demo_gw.png)
 
+Figures 5, 6 and 7 illustrate the behaviour of the model at the player level across different sampling schemes, ranging from randomly selected players to top-ranked players within specific Gameweeks.
 
-![Figure 7: 10 random team strength predictions](predictions/h_team_strength_random_gw.png)
+In the random player sample (Figure 5), predicted scores display a pronounced concentration at very low values, with several players receiving identical predictions of 0.15 points. These cases correspond to players with minimal recent playing time, for whom the model primarily estimates the probability of appearance rather than expected on-field contribution. Conversely, high-impact players within the same sample are assigned substantially higher predicted values. For instance, Bruno Fernandes, who records a high realised score, is also associated with a markedly higher prediction, indicating that the model successfully differentiates between low-involvement and high-involvement profiles.
 
-The table shows that the model assigns home win probabilities broadly in line with bookmaker estimates, typically ranging between 0.30 and 0.70 depending on the relative strength of the teams. For most matches, the absolute difference between the model and Bet365 probabilities remains limited (often below 10 percentage points), indicating a good overall calibration.
-Larger deviations occur mainly for matches involving top teams, where bookmakers tend to assign very high probabilities (above 0.70), while the model remains more conservative. This suggests that the model captures relative team strength effectively, while avoiding extreme probabilities driven by market sentiment.
+This calibration pattern persists when predictions are aggregated at the Gameweek level. In Figure 6, which reports the best predicted player across ten randomly selected Gameweeks, predicted scores cluster within a relatively narrow interval of approximately 4.3 to 5.6 points. In many cases, realised outcomes are of comparable magnitude (e.g. Ødegaard: 5.37 predicted vs 5 realised; Trippier: 4.32 vs 6; Martínez: 5.37 vs 7), suggesting reasonable accuracy for typical performances. Extreme deviations remain present, as illustrated by Haaland, whose realised score of 23 points vastly exceeds his predicted value of 5.64, underscoring the inherent difficulty of forecasting exceptional match-level events.
 
+A similar compression of predictions is observed in the fixed Gameweek analysis (Figure 7). For demo GW21, the model assigns predicted scores between approximately 4.1 and 5.4 points to the top-ranked players. While several realised outcomes closely match predictions (e.g. Ødegaard: 5.37 vs 5; Bruno Fernandes: 4.15 vs 5), notable discrepancies persist (e.g. Trippier: 4.32 vs 8; Rashford: 4.18 vs 7). These deviations reflect match-specific volatility rather than systematic miscalibration.
+Taken together, these results confirm that the model produces conservative and tightly clustered point estimates, which limits its ability to predict extreme performances but ensures stable and informative player rankings across different Gameweeks and selection schemes
 
-
-![Figure 8: Top 10 player of a single gameweek](tables/top10_player_demo_gw.png)
-
-For a fixed Gameweek (demo GW = GW21), the model assigns predicted scores within a narrow range (approximately 4.1 to 5.4 points), reflecting similar expected contributions across top-ranked players. In several cases, the realized outcomes are close to the predictions (e.g. Ødegaard: 5.37 vs 5, Bruno Fernandes: 4.15 vs 5), indicating reasonable short-term calibration.
-At the same time, notable deviations remain (e.g. Trippier: 4.32 vs 8, Rashford: 4.18 vs 7), highlighting the inherent match-level volatility of FPL points rather than systematic model bias.
-
+![Figure 8: 10 random team strength predictions](predictions/h_team_strength_random_gw.png)
 
 ![Figure 9: Top 5 teams according to predictions](tables/top5_teams.png)
 
-The table shows that the model clearly differentiates teams based on the aggregate strength of their top-11 players. Manchester City ranks first with a Top-11 sum of 56.34 points (average 5.12 per player), followed closely by Liverpool (55.07, 5.01) and Brighton (53.46, 4.86).
-The relatively narrow spread between teams (approximately 51.9 to 56.3 points) indicates a competitive upper tier, while still reflecting meaningful differences in squad quality. These results confirm that the model produces consistent and interpretable team-level rankings driven by individual player predictions.
+![Figure 10: Comparison with bet 365 bookmaker](predictions/bookmakers_comparison.png)
+
+Figures 8, 9 and 10 extend the analysis from the player level to team-level outcomes and benchmark the model’s predictions against bookmaker probabilities, providing an external validation of the estimated team strengths.
+
+In the random match sample (Figure 8), the model assigns home win probabilities that typically fall within a moderate range of approximately 0.30 to 0.70, depending on the relative strength of the teams involved. For most fixtures, the absolute difference between the model’s predictions and Bet365 implied probabilities remains limited, often below 10 percentage points, indicating a satisfactory level of calibration. Larger discrepancies tend to occur in matches involving top teams, where bookmakers assign very high probabilities, while the model remains more conservative.
+
+This conservative behaviour is consistent with the team-level rankings shown in Figure 9. The model clearly differentiates teams based on the aggregated predicted strength of their top-11 players. Manchester City ranks first with a Top-11 sum of 56.34 points (average 5.12 per player), followed closely by Liverpool (55.07, 5.01) and Brighton (53.46, 4.86). The relatively narrow range between teams—approximately 51.9 to 56.3 points—suggests a competitive upper tier, while still capturing meaningful differences in squad quality derived from individual player predictions.
+
+The comparison with bookmakers over a larger sample of 182 matches (Figure 10) confirms these patterns quantitatively. The model achieves a mean absolute error of 0.153 relative to Bet365 probabilities, with a positive correlation of 0.267, indicating partial but non-trivial alignment with market expectations. The largest absolute errors, reaching approximately 0.40–0.44, systematically involve matches featuring Manchester City, where bookmakers assign extreme home-win probabilities (0.84–0.89), while the model predicts substantially lower values (0.42–0.46). Conversely, near-perfect agreement is observed in more balanced fixtures, with absolute errors as low as 0.001, typically when both the model and bookmakers estimate probabilities in the 0.40–0.46 range.
+
+Overall, these results indicate that the model captures relative team strength effectively and aligns well with bookmaker assessments for typical matchups, while deliberately avoiding extreme probability assignments. This conservative stance reflects a data-driven approach that prioritises robustness over market sentiment, particularly in fixtures involving dominant teams.
+
+
 
 ———————————————————————————————————————————————————
 
 # 5. Discussion
 
-The empirical results presented in Section 4 provide a detailed assessment of the strengths and limitations of the proposed predictive framework. Overall, the findings confirm that modelling choices have a substantial impact on predictive performance, while also highlighting intrinsic constraints related to the variability of football outcomes.
+This section synthesises and interprets the empirical results obtained throughout the analysis, with a focus on model performance, limitations, and practical implications for Fantasy Premier League decision-making.
 
-A first key result is the consistent superiority of the gradient boosting seasonal model across quantitative metrics. As shown in Table 1, this model achieves the lowest MAE (1.122), the highest explained variance (R² = 0.263), and the strongest rank correlation (Spearman = 0.693). These improvements over linear baselines indicate that non-linear interactions between historical player features contribute meaningfully to predictive accuracy. In contrast, linear models, while stable and interpretable, exhibit higher error levels and weaker ranking consistency, particularly when relying on short rolling lag windows.
+## 5.1 What worked well
 
-The visual diagnostics further support these conclusions. Predicted-versus-actual scatter plots show a clear positive relationship between predictions and realised points, confirming that the models successfully capture general performance trends. However, the compression of predictions toward moderate values and the systematic underprediction of extreme outcomes reveal a pronounced regression-to-the-mean effect. This behaviour is especially evident for high point totals and reflects the difficulty of forecasting rare, high-impact performances using historical data alone.
+The results demonstrate that the proposed modelling framework successfully captures meaningful predictive signals from historical Fantasy Premier League data. In particular, the gradient boosting model consistently outperforms simpler linear approaches across multiple evaluation dimensions.
 
-Residual analyses provide additional insight into model behaviour. For the gradient boosting model, the highest density of residuals lies in the interval [0.02; 0.47], compared to [0.40; 0.88] for the weakest-performing linear model. This shift toward a narrower and more central residual distribution illustrates the reduction in typical prediction error achieved by the more flexible model. At the same time, the slight displacement of high-density regions above zero suggests the presence of a small positive bias. While this bias decreases as model complexity increases, it does not disappear entirely, underscoring the structural uncertainty inherent in football performance data.
+At the player level, the model exhibits strong ranking capabilities, as evidenced by the clear positive relationship between predicted and realised points and the tight clustering of residuals around small values. While point predictions are deliberately conservative, the model reliably distinguishes low-involvement players from high-impact profiles and produces stable rankings across different Gameweeks and sampling schemes. This property is especially valuable in an FPL context, where relative comparisons between players are often more relevant than exact point forecasts.
 
-From an applied perspective, the ranking-oriented outputs analysed in Section 4 are particularly informative. Gameweek-level predictions, top-player rankings, and team-level aggregates demonstrate that the model produces coherent and interpretable signals aligned with realistic decision-making scenarios in Fantasy Premier League. Although extreme outcomes remain difficult to predict accurately, the model consistently assigns higher expected values to high-impact players, indicating effective identification of relative player quality even in volatile settings.
+At the team level, aggregating player predictions into team strength measures yields coherent and interpretable rankings. The model successfully differentiates top-tier teams and produces probability estimates that are broadly aligned with bookmaker odds for most fixtures. The relatively low mean absolute error observed in the comparison with Bet365 probabilities further supports the external validity of the approach.
 
-Finally, the comparison with bookmaker-based probabilities suggests that the model captures team strength patterns broadly consistent with market expectations. While bookmakers benefit from additional information sources and expert input, the relatively small deviations observed for most matches indicate that a purely data-driven approach can generate competitive estimates. This result is encouraging, while also pointing to potential gains from integrating richer contextual features in future extensions.
+## 5.2 Challenges encountered
 
-Taken together, these results suggest that while predictive accuracy at the individual gameweek level is fundamentally constrained by randomness and rare events, carefully designed machine learning models can deliver meaningful improvements in both accuracy and ranking quality. The findings support the initial hypothesis that non-linear modelling approaches offer tangible benefits in the Fantasy Premier League context, while also clarifying the practical limits of statistical prediction in a highly stochastic environment.
+One of the main challenges encountered during the project was modelling the high variability inherent in football performance. Player-level outcomes are influenced by numerous unobserved factors such as tactical decisions, injuries, substitutions, and rare match events, which are difficult to capture using historical data alone.
+From a methodological perspective, early linear models struggled to handle these complexities, particularly in the presence of non-linear relationships and interaction effects. This limitation motivated the adoption of gradient boosting techniques, which proved more effective at controlling error dispersion and capturing subtle performance patterns. The challenge was addressed by carefully tuning model complexity to improve predictive accuracy while avoiding overfitting, resulting in a more robust and stable predictive framework.
+
+## 5.3 Comparison with expectations
+
+The results largely align with the initial expectations and hypotheses of the project. It was anticipated that machine learning models would outperform simple baselines by exploiting richer feature interactions, which is confirmed by the superior calibration and reduced residual dispersion of the gradient boosting model.
+
+However, the extent of prediction compression and systematic underprediction of extreme outcomes was more pronounced than initially expected. While this behaviour limits the model’s ability to forecast exceptional performances precisely, it is consistent with a regression-to-the-mean effect and reflects a deliberate trade-off between robustness and sensitivity. Importantly, despite this compression, the model still correctly identifies high-potential players and dominant teams, which supports its intended use as a decision-support tool rather than a point-exact forecasting engine.
+
+## 5.4 Limitations
+
+Several limitations of the proposed approach should be acknowledged. First, the model relies exclusively on historical performance data and does not incorporate real-time contextual information such as injuries, line-up announcements, or tactical adjustments. This constraint inherently limits short-term predictive accuracy, particularly for players with volatile playing time.
+
+Second, the conservative nature of the predictions, while beneficial for stability and ranking consistency, prevents the model from assigning extreme probabilities or point estimates. As a result, rare but high-impact events—such as hat tricks or unusually dominant team performances—are systematically underpredicted.
+Finally, the comparison with bookmaker odds highlights that market probabilities often reflect additional information and sentiment not captured by the model. While the model aligns well with bookmakers in average matchups, its divergence in matches involving top teams underscores the limits of a purely data-driven approach when faced with extreme confidence levels embedded in betting markets.
+
+## 5.5 Surprising findings
+
+One of the more unexpected findings is the degree to which conservative predictions still yield strong comparative performance. Despite avoiding extreme point estimates and probabilities, the model maintains reasonable alignment with both realised outcomes and bookmaker assessments. This suggests that much of the predictive value in Fantasy Premier League lies in capturing relative strength and consistency rather than attempting to forecast rare events precisely.
+
+Additionally, the relatively narrow spread in team-level strength estimates among top teams highlights the competitive nature of the Premier League, even at the highest level. This result reinforces the idea that marginal differences in squad composition and player form can have meaningful implications, despite appearing small in absolute terms.
 
 ———————————————————————————————————————————————————
 
 # 6. Conclusion
 
+This project investigated the extent to which historical Fantasy Premier League data can be leveraged to predict player- and team-level performance in an inherently uncertain sporting environment. By combining structured data pipelines with supervised learning models, the study assessed both the predictive potential and the practical limits of data-driven approaches to Fantasy Premier League decision-making.
+
 ## 6.1 Summary
 
-This project examined the extent to which historical Fantasy Premier League data can be leveraged to predict player-level point outcomes at the gameweek level. The primary objective was to develop a reproducible predictive framework capable of estimating expected player performance and to evaluate the effectiveness of different modelling approaches within a realistic forecasting setting.
+The main contribution of this project lies in the development of a robust and interpretable predictive framework for Fantasy Premier League points. The results show that machine learning models, and gradient boosting in particular, significantly improve predictive accuracy and error control relative to simpler linear baselines. While exact point forecasts remain challenging, the model successfully captures relative player performance and produces stable and informative rankings across multiple Gameweeks.
 
-The results show that data-driven methods provide clear improvements over simple baseline strategies. Supervised learning models, and gradient boosting in particular, achieve lower prediction errors and stronger ranking consistency by capturing non-linear relationships in historical player performance data. Linear regression models also perform competitively while offering greater interpretability, making them useful reference models within the framework. Overall, the project successfully meets its objectives by demonstrating that historical information on player form and playing time contains meaningful predictive signals.
+At the player level, predictions are deliberately conservative and compressed, reflecting a trade-off between robustness and sensitivity to extreme outcomes. Despite this compression, the model consistently identifies high-impact player profiles and distinguishes low-involvement players, which aligns well with practical Fantasy Premier League use cases focused on comparative decision-making rather than precise point prediction.
 
-Beyond predictive accuracy, a key contribution of this work lies in the construction of a modular and reproducible analysis pipeline. The project integrates data collection, preprocessing, modelling, evaluation, and reporting within a consistent programming structure, enabling transparent comparison across models and facilitating further experimentation. As such, the framework provides a practical foundation for decision support in Fantasy Premier League contexts rather than attempting to deliver exact point forecasts.
+At the team level, aggregating player predictions into team strength measures yields coherent and interpretable rankings. The resulting match-level probability estimates show meaningful alignment with bookmaker odds for typical fixtures, while remaining more cautious in matches involving dominant teams. This behaviour highlights the model’s ability to capture relative team strength while avoiding overconfident predictions driven by market sentiment.
+
+Overall, the project meets its initial objectives by demonstrating that historical performance data contains exploitable predictive signals, while also clearly delineating the limits imposed by the stochastic nature of football outcomes. The resulting framework provides a solid foundation for further methodological extensions and real-world applications.
 
 ## 6.2 Future Work
 
-Several extensions could further enhance the proposed approach. From a methodological perspective, incorporating richer contextual features—such as advanced performance statistics, opponent-specific effects, or team tactical indicators—could improve predictive power. Exploring probabilistic models or sequential approaches may also allow uncertainty to be quantified more explicitly, providing users with confidence intervals rather than point estimates.
+Several avenues for future work emerge naturally from the findings of this project.
+From a methodological perspective, incorporating real-time contextual information—such as injuries, line-up announcements, fixture congestion, or tactical indicators—could improve short-term predictive accuracy and reduce the systematic underprediction of extreme performances. Additionally, experimenting with probabilistic models or Bayesian approaches may allow the model to express uncertainty more explicitly, particularly for high-variance players and matchups.
 
-Additional experiments could investigate alternative evaluation schemes, such as rolling retraining or season-by-season backtesting, to better capture evolving player dynamics. Finally, from an applied standpoint, the framework could be extended to support real-time predictions, integration with live data sources, or deployment within interactive dashboards, raising scalability and usability considerations. These directions highlight the potential for further development while acknowledging the fundamental uncertainty inherent in football performance prediction.
+Further experiments could also explore alternative loss functions tailored to ranking quality rather than point accuracy, which would better reflect the decision-making objectives of Fantasy Premier League managers. Evaluating ensemble strategies that combine multiple model classes may further enhance robustness and stability.
+In terms of real-world applications, the framework could be extended into a fully automated decision-support tool for Fantasy Premier League participants, providing weekly player rankings, transfer recommendations, and risk-adjusted performance metrics. Beyond Fantasy Premier League, the approach is readily transferable to other fantasy sports or performance-based forecasting problems in finance and analytics where relative ranking and uncertainty management are critical.
 
+Finally, scalability considerations suggest that the pipeline could be adapted to handle larger datasets or additional leagues with minimal structural changes. This opens the door to broader comparative analyses and cross-league generalisation, further strengthening the practical relevance of the proposed methodology.
+
+Final remark is that, while football performance remains fundamentally unpredictable, this project demonstrates that carefully designed data-driven models can deliver meaningful, interpretable, and actionable insights. By embracing uncertainty rather than attempting to eliminate it, the proposed approach strikes an effective balance between predictive power and practical usefulness.
 ———————————————————————————————————————————————————
 
 # References
@@ -255,9 +290,13 @@ Additional experiments could investigate alternative evaluation schemes, such as
 
 2. Kaggle. (2023). *Fantasy Premier League Dataset*. Retrieved from https://www.kaggle.com  
 
-3. Hubáček, Šourek and Železný (2019)
+3. Hubáček, Šourek and Železný (2019) *Gradient boosting for soccer prediction lecture*
 
-4. Berrar et al. (2019)
+4. Berrar et al. (2019) *Domain knowledge in soccer prediction*
+
+5. https://www.youtube.com/@LetsTalkFPL *very good youtube FPL channel*
+
+6. https://www.youtube.com/@FPLHarry *very good youtube FPL channel*
 
 ———————————————————————————————————————————————————
 

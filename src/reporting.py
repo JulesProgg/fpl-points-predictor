@@ -57,47 +57,58 @@ def _save_fig(fig, path: Path) -> None:
 def summarize_bookmaker_comparison(comp: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Create display-ready worst5/best5 tables from compare_model_vs_bookmakers output.
-    Keeps diff/abs_error/renaming out of main.py.
-    Returns: (worst5, best5)
+    - abs_error computed directly from probabilities
     """
     df = comp.copy()
 
-    required = {"pnorm_home_win", "p_model_home_win", "abs_error"}
+    required = {"pnorm_home_win", "p_model_home_win"}
     missing = required - set(df.columns)
     if missing:
         raise KeyError(f"Bookmaker comparison missing columns: {sorted(missing)}")
 
+    # Ensure numeric
     df["pnorm_home_win"] = pd.to_numeric(df["pnorm_home_win"], errors="coerce")
     df["p_model_home_win"] = pd.to_numeric(df["p_model_home_win"], errors="coerce")
-    df["abs_error"] = pd.to_numeric(df["abs_error"], errors="coerce")
-    df = df.dropna(subset=["pnorm_home_win", "p_model_home_win", "abs_error"]).copy()
 
-    df["diff"] = df["p_model_home_win"] - df["pnorm_home_win"]
+    df = df.dropna(subset=["pnorm_home_win", "p_model_home_win"]).copy()
 
+    # --------------------------------------------------
+    # Compute absolute error 
+    # --------------------------------------------------
+    df["abs_error"] = (df["p_model_home_win"] - df["pnorm_home_win"]).abs()
+
+    # --------------------------------------------------
+    # Display-ready table (single source of truth)
+    # --------------------------------------------------
     display_cols = [
         c for c in [
-            "season",
-            "gameweek",
+            "gameweek",          
             "home_team",
             "away_team",
             "pnorm_home_win",
             "p_model_home_win",
-            "diff",
             "abs_error",
         ]
         if c in df.columns
     ]
 
-    df_display = df[display_cols].rename(
-        columns={
-            "pnorm_home_win": "p_home_win_b365",
-            "p_model_home_win": "p_home_win_model",
-        }
+    df_display = (
+        df[display_cols]
+        .rename(
+            columns={
+                "gameweek": "gw",
+                "pnorm_home_win": "p_home_win_b365",
+                "p_model_home_win": "p_home_win_model",
+            }
+        )
+        .round(3)
     )
 
-    worst5 = df_display.sort_values("abs_error", ascending=False).head(5).round(3)
-    best5 = df_display.sort_values("abs_error", ascending=True).head(5).round(3)
+    worst5 = df_display.sort_values("abs_error", ascending=False).head(5)
+    best5 = df_display.sort_values("abs_error", ascending=True).head(5)
+
     return worst5, best5
+
 
 
 def console_print_bookmaker_stats(mae: float, corr: float, n: int) -> None:
@@ -1148,7 +1159,26 @@ def export_gw_results(
             encoding="utf-8",
         )
 
+    # ------------------------------------------------------
+    # Optional bookmaker comparison export (CSV + Markdown)
+    # Non-blocking: informative only
+    # ------------------------------------------------------
+    try:
+        # Requires: export_bookmaker_comparison(...) to exist in reporting.py
+        export_bookmaker_comparison(
+            test_season=test_season,
+            output_dir=output_dir,
+            model="gw_seasonal_gbm",
+            verbose=False,
+        )
+    except Exception as e:
+        (predictions_dir / "bookmakers_comp.ERROR.txt").write_text(
+            f"Bookmaker comparison failed: {type(e).__name__}: {e}\n",
+            encoding="utf-8",
+        )
+
     return df
+
 
 
 # =============================================================================
@@ -1615,3 +1645,64 @@ def export_tables_results(
 
 
     return {"top_players": top_players_out, "top_teams": top_teams_out}
+
+
+def export_bookmaker_comparison(
+    *,
+    test_season: str = "2022/23",
+    output_dir: str | Path = "results",
+    model: str = "gw_seasonal_gbm",
+    verbose: bool = False,
+) -> tuple[pd.DataFrame, float, float]:
+    """
+    Export bookmaker comparison under results/predictions:
+      - bookmakers_comp__<season>.csv : full match-level table from evaluation.py
+      - bookmakers_comp__<season>.md  : report-friendly summary (MAE/Corr/n + worst/best 5)
+
+    Returns (comp, mae, corr).
+    """
+    output_dir = Path(output_dir)
+    predictions_dir = output_dir / "predictions"
+    _ensure_dir(predictions_dir)
+
+    from src.evaluation import compare_model_vs_bookmakers
+    # summarize_bookmaker_comparison is in this module (reporting.py) per your snippet
+    # otherwise import it from where it lives.
+
+    comp, mae, corr = compare_model_vs_bookmakers(
+        model=model,
+        test_season=test_season,
+        verbose=verbose,
+    )
+
+    # Display-ready tables (already renamed + diff + rounded)
+    worst5, best5 = summarize_bookmaker_comparison(comp)
+
+    # ------------------------
+    # CSV (full comp)
+    # ------------------------
+    season_tag = test_season.replace("/", "_")
+    out_csv = predictions_dir / f"bookmakers_comparison.csv"
+    comp.to_csv(out_csv, index=False)
+
+    # ------------------------
+    # Markdown (photo-ready)
+    # ------------------------
+    out_md = predictions_dir / f"bookmakers_comparison.md"
+
+    md_lines: list[str] = []
+    md_lines.append(f"# Bookmaker comparison (Bet365) — {test_season}\n")
+    md_lines.append("## Statistics summary\n")
+    md_lines.append(f"- **MAE**: {float(mae):.3f}")
+    md_lines.append(f"- **Corr**: {float(corr):.3f}")
+    md_lines.append(f"- **n**: {int(len(comp))}\n")
+
+    md_lines.append("## Worst 5 predictions (largest |Bet365 − model|)\n")
+    md_lines.append(worst5.to_markdown(index=False, tablefmt="github") + "\n")
+
+    md_lines.append("## Best 5 predictions (smallest |Bet365 − model|)\n")
+    md_lines.append(best5.to_markdown(index=False, tablefmt="github") + "\n")
+
+    out_md.write_text("\n".join(md_lines), encoding="utf-8")
+
+    return comp, float(mae), float(corr)

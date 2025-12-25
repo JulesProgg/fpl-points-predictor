@@ -198,9 +198,11 @@ def main() -> None:
 
 
     # ------------------------------------------------------------------
-    # 3) Sample match team-strength export (optional, non-blocking)
+    # 3) Match sample team strength — enrich preview 
+    #     Purpose: add an interpretable "favorite" column on top of the
+    #     exported match sample (h_team_strength_random_gw.csv/.md).
     # ------------------------------------------------------------------
-    print("\n3) Exporting sample match team strength")
+    print("\n3) Match sample team strength (enrich: favorite)")
     if args.skip_sample_matches:
         print(_status_line("export_sample_match_team_strength", "SKIPPED", "--skip-sample-matches"))
     else:
@@ -213,24 +215,36 @@ def main() -> None:
                 seed=42,
             )
 
+            # Enrich for interpretability (report-ready preview)
             sample = enrich_sample_match_summary(sample)
 
-            print(_status_line("sample match team strength exported", "DONE", f"n={len(sample)}"))
-            print(_status_line("CSV output", "INFO", f"{output_dir}/predictions/"))
+            print(_status_line("match sample exported", "DONE", f"n={len(sample)}"))
+            print(
+                _status_line(
+                    "Outputs",
+                    "INFO",
+                    f"{output_dir}/predictions/h_team_strength_random_gw.(csv|md)",
+                )
+            )
+            print(_status_line("Enrichment", "INFO", "added column: favorite"))
 
-            preview_cols = ["home_team", "away_team", "home_strength", "away_strength", "delta_strength", "favorite"]
+            preview_cols = [
+                "gameweek",
+                "home_team",
+                "away_team",
+                "home_strength",
+                "away_strength",
+                "strength_diff",
+                "favorite",
+            ]
             preview_cols = [c for c in preview_cols if c in sample.columns]
+
             print("\n   Match summary preview:")
             print(sample[preview_cols].to_string(index=False))
 
-            out_path = Path(output_dir) / "predictions" / "sample_match_team_strength_summary.csv"
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            sample.to_csv(out_path, index=False)
-            print(_status_line("Summary CSV", "DONE", str(out_path)))
-
         except Exception as e:
             # Non-blocking: depends on fixtures/odds availability
-            print(_status_line("sample match export", "WARNING", f"{type(e).__name__}: {e}"))
+            print(_status_line("match sample export", "WARNING", f"{type(e).__name__}: {e}"))
 
 
 
