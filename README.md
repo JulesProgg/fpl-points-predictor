@@ -83,7 +83,7 @@ fpl-points-predictor/
 ├── README.md
 ├── download_data_instructions.md
 ├── report/
-│   ├── project_report_final_version.pdf/ 
+│   ├── final_report.pdf/ 
 ├── pyproject.toml
 └── PROPOSAL.md
 
