@@ -909,27 +909,6 @@ def export_gw_results(
 
     (metrics_dir / "gw_metrics_detailed.md").write_text("\n".join(md_lines), encoding="utf-8")
 
-    leaderboard = {
-        "type": "gw_holdout_leaderboard",
-        "test_season": test_season,
-        "created_at": datetime.now().isoformat(timespec="seconds"),
-        "best_model": {
-            "model_key": str(best["model_key"]),
-            "mae": float(best["mae"]),
-            "rmse": float(best["rmse"]),
-            "r2": float(best["r2"]),
-            "spearman": float(best["spearman"]),
-            "bias": float(best["bias"]),
-            "medae": float(best["medae"]),
-            "p90_ae": float(best["p90_ae"]),
-            "n_obs": int(best["n_obs"]),
-        },
-        "models": df.to_dict(orient="records"),
-    }
-    (metrics_dir / "gw_leaderboard.json").write_text(
-        json.dumps(leaderboard, indent=2),
-        encoding="utf-8",
-    )
 
     # -----------------------------
     # Predictions random sample (10 players, 1 random GW each)
